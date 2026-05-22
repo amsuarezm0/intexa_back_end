@@ -1,0 +1,143 @@
+package main
+
+import (
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"strings"
+
+	"github.com/go-chi/chi/v5"
+	chimiddleware "github.com/go-chi/chi/v5/middleware"
+	"github.com/go-chi/cors"
+
+	"github.com/intexa/arca-api/internal/db"
+	"github.com/intexa/arca-api/internal/handler"
+	"github.com/intexa/arca-api/internal/middleware"
+	"github.com/intexa/arca-api/internal/repository/memory"
+	"github.com/intexa/arca-api/internal/repository/postgres"
+	"github.com/intexa/arca-api/internal/repository"
+)
+
+func main() {
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+
+	// ── Store ─────────────────────────────────────────────────────────────────
+	var store repository.Store
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		log.Println("DATABASE_URL not set — using in-memory store (dev mode)")
+		log.Println("  login: admin@arca.local / admin")
+		store = memory.New()
+	} else {
+		pool, err := db.Connect(dsn)
+		if err != nil {
+			log.Fatalf("DB connect: %v", err)
+		}
+		if err := db.RunMigrations(pool); err != nil {
+			log.Fatalf("DB migrate: %v", err)
+		}
+		store = postgres.New(pool)
+		log.Println("store: PostgreSQL")
+	}
+
+	// ── Handlers ──────────────────────────────────────────────────────────────
+	auth := handler.NewAuthHandler(store)
+	dashboard := handler.NewDashboardHandler(store)
+	transactions := handler.NewTransactionsHandler(store)
+	cashflow := handler.NewCashFlowHandler(store)
+	projections := handler.NewProjectionsHandler(store)
+	reports := handler.NewReportsHandler(store)
+	users := handler.NewUsersHandler(store)
+	settings := handler.NewSettingsHandler(store)
+	siigoH := handler.NewSiigoHandler(store)
+	domains := handler.NewDomainsHandler(store)
+
+	// ── Router ────────────────────────────────────────────────────────────────
+	r := chi.NewRouter()
+	r.Use(chimiddleware.Logger)
+	r.Use(chimiddleware.Recoverer)
+	r.Use(chimiddleware.RequestID)
+	allowedOrigins := []string{"http://localhost:5173", "http://localhost:3000"}
+	if raw := os.Getenv("ALLOWED_ORIGINS"); raw != "" {
+		allowedOrigins = strings.Split(raw, ",")
+	}
+	r.Use(cors.Handler(cors.Options{
+		AllowedOrigins:   allowedOrigins,
+		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type"},
+		AllowCredentials: true,
+	}))
+
+	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintln(w, `{"status":"ok","service":"intexa-arca-api"}`)
+	})
+
+	r.Route("/api/v1", func(r chi.Router) {
+		// Public
+		r.Post("/auth/login", auth.Login)
+		r.Get("/auth/microsoft", auth.MicrosoftRedirect)
+		r.Get("/auth/microsoft/callback", auth.MicrosoftCallback)
+
+		// Protected
+		r.Group(func(r chi.Router) {
+			r.Use(middleware.Auth)
+
+			r.Post("/auth/logout", auth.Logout)
+
+			// Dashboard
+			r.Get("/dashboard", dashboard.GetSummary)
+
+			// Transactions
+			r.Get("/transactions", transactions.List)
+			r.Post("/transactions", transactions.Create)
+			r.Get("/transactions/summary", transactions.Summary)
+			r.Get("/transactions/{id}", transactions.Get)
+			r.Put("/transactions/{id}", transactions.Update)
+			r.Delete("/transactions/{id}", transactions.Delete)
+
+			// Cash flow
+			r.Get("/cashflow", cashflow.GetSummary)
+
+			// Projections
+			r.Get("/projections", projections.GetSummary)
+			r.Post("/projections", projections.Create)
+			r.Post("/projections/simulate", projections.Simulate)
+
+			// Reports
+			r.Get("/reports", reports.GetSummary)
+			r.Get("/reports/export", reports.Export)
+
+			// Users
+			r.Get("/users", users.List)
+			r.Post("/users", users.Create)
+			r.Put("/users/{id}", users.Update)
+			r.Delete("/users/{id}", users.Delete)
+
+			// Settings
+			r.Get("/settings", settings.Get)
+			r.Put("/settings", settings.Update)
+			r.Get("/categories", settings.GetCategories)
+			r.Get("/activity-logs", settings.GetActivityLogs)
+
+			// Siigo integration
+			r.Post("/siigo/connect", siigoH.Connect)
+			r.Get("/siigo/status", siigoH.Status)
+			r.Post("/siigo/sync", siigoH.Sync)
+
+			// Allowed domains (admin only)
+			r.Get("/allowed-domains", domains.List)
+			r.Post("/allowed-domains", domains.Add)
+			r.Delete("/allowed-domains/{domain}", domains.Remove)
+		})
+	})
+
+	log.Printf("intexa-arca-api listening on :%s", port)
+	if err := http.ListenAndServe(":"+port, r); err != nil {
+		log.Fatal(err)
+	}
+}

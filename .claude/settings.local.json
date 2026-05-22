@@ -1,0 +1,41 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:developers.siigolatam.com)",
+      "WebSearch",
+      "WebFetch(domain:siigonube.portaldeclientes.siigo.com)",
+      "WebFetch(domain:developers.siigo.com)",
+      "WebFetch(domain:siigoapi.docs.apiary.io)",
+      "WebFetch(domain:www.siigo.com)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:www.postman.com)",
+      "WebFetch(domain:www.studocu.com)",
+      "WebFetch(domain:saprodcentralassets.blob.core.windows.net)",
+      "WebFetch(domain:www.getkonvex.com)",
+      "WebFetch(domain:www.npmjs.com)",
+      "Bash(PORT=18090 go run ./cmd/server)",
+      "Bash(curl -s http://localhost:18090/health)",
+      "Bash(curl -s -X POST http://localhost:18090/api/v1/auth/login -H \"Content-Type: application/json\" -d '{\"email\":\"elena.m@intexa.com\",\"password\":\"password\"}')",
+      "Bash(kill %1)",
+      "Bash(PORT=18091 go run ./cmd/server)",
+      "Bash(curl -s -X POST http://localhost:18091/api/v1/auth/login -H 'Content-Type: application/json' -d '{\"email\":\"elena.m@intexa.com\",\"password\":\"password\"}')",
+      "Bash(PORT=18092 go run ./cmd/server)",
+      "Bash(curl -s -X POST http://localhost:18092/api/v1/auth/login -H 'Content-Type: application/json' -d '{\"email\":\"elena.m@intexa.com\",\"password\":\"password\"}')",
+      "Bash(sed -i 's/store \\\\*repository\\\\.Store/store repository.Store/g' /home/michelangelo/intexa-arca-api/internal/handler/dashboard.go /home/michelangelo/intexa-arca-api/internal/handler/cashflow.go /home/michelangelo/intexa-arca-api/internal/handler/projections.go /home/michelangelo/intexa-arca-api/internal/handler/reports.go /home/michelangelo/intexa-arca-api/internal/handler/transactions.go /home/michelangelo/intexa-arca-api/internal/handler/users.go /home/michelangelo/intexa-arca-api/internal/handler/settings.go /home/michelangelo/intexa-arca-api/internal/handler/siigo.go)",
+      "Bash(sed -i 's/store \\\\*repository\\\\.Store/store repository.Store/g; s/func New\\\\\\([A-Za-z]*\\\\\\)Handler\\(store \\\\*repository\\\\.Store\\)/func New\\\\1Handler\\(store repository.Store\\)/g' /home/michelangelo/intexa-arca-api/internal/handler/auth.go)",
+      "Bash(go get *)",
+      "Bash(go build *)",
+      "Bash(PORT=18095 go run ./cmd/server)",
+      "Bash(curl -s -X POST http://localhost:18095/api/v1/auth/login -H 'Content-Type: application/json' -d '{\"email\":\"elena.m@intexa.com\",\"password\":\"password\"}')",
+      "Bash(git -C /home/michelangelo/intexa-arca-api log --oneline -10)",
+      "Bash(xargs cat)",
+      "Bash(JWT_SECRET=dev go run ./cmd/server/main.go)",
+      "Bash(curl -s http://localhost:8080/health)",
+      "Bash(curl -s -X POST http://localhost:8080/api/v1/auth/login -H 'Content-Type: application/json' -d '{\"email\":\"admin@arca.local\",\"password\":\"admin\"}')",
+      "Bash(pkill -f \"arca-api\")",
+      "Bash(echo \"PID=$!\")",
+      "Read(//tmp/**)",
+      "Bash(python3 -c ' *)"
+    ]
+  }
+}
