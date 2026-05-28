@@ -473,7 +473,10 @@ func (s *Store) GetBankBalance() (*domain.BankBalance, error) {
 
 func (s *Store) SetBankBalance(b domain.BankBalance) error {
 	_, err := s.pool.Exec(bg(), `
-		UPDATE bank_balance SET amount=$1, updated_by=$2, updated_at=now()`,
+		INSERT INTO bank_balance (amount, updated_by, updated_at)
+		VALUES ($1, $2, now())
+		ON CONFLICT (id) DO UPDATE
+			SET amount=$1, updated_by=$2, updated_at=now()`,
 		b.Amount, b.UpdatedBy)
 	return err
 }

@@ -147,11 +147,7 @@ func (h *DashboardHandler) GetBankBalance(w http.ResponseWriter, r *http.Request
 		jsonError(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	if b == nil {
-		jsonOK(w, map[string]any{"amount": 0, "updatedAt": nil, "updatedBy": ""})
-		return
-	}
-	jsonOK(w, b)
+	jsonOK(w, b) // nil serialises as JSON null → frontend shows '—'
 }
 
 // PUT /api/v1/dashboard/bank-balance
