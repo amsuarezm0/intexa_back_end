@@ -86,6 +86,22 @@ type Alert struct {
 	DueDate     string  `json:"dueDate"`
 }
 
+type NotificationItem struct {
+	ID          string  `json:"id"`
+	Title       string  `json:"title"`
+	Category    string  `json:"category"`
+	Amount      float64 `json:"amount"`
+	Date        string  `json:"date"`
+	DaysOverdue int     `json:"daysOverdue"` // negative = days until due
+	Urgency     string  `json:"urgency"`     // "overdue" | "due-soon" | "upcoming"
+}
+
+type NotificationSummary struct {
+	Count    int                `json:"count"`
+	Gastos   []NotificationItem `json:"gastos"`
+	Ingresos []NotificationItem `json:"ingresos"`
+}
+
 type WeeklyComparison struct {
 	Week     int     `json:"week"`
 	Ingresos float64 `json:"ingresos"`

@@ -56,6 +56,7 @@ func main() {
 	siigoH := handler.NewSiigoHandler(store)
 	domains := handler.NewDomainsHandler(store)
 	exchangeRates := handler.NewExchangeRateHandler()
+	notifications := handler.NewNotificationsHandler(store)
 
 	// ── Siigo auto-connect + scheduler ───────────────────────────────────────
 	if siigoUser := os.Getenv("SIIGO_USERNAME"); siigoUser != "" {
@@ -130,6 +131,9 @@ func main() {
 			r.Post("/users", users.Create)
 			r.Put("/users/{id}", users.Update)
 			r.Delete("/users/{id}", users.Delete)
+
+			// Notifications
+			r.Get("/notifications", notifications.GetNotifications)
 
 			// Settings
 			r.Get("/settings", settings.Get)
