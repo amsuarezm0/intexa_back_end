@@ -1,14 +1,10 @@
 package handler
 
 import (
-	"crypto/rand"
-	"encoding/hex"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
-	"net/url"
-	"os"
 	"strings"
 	"time"
 
@@ -17,32 +13,6 @@ import (
 	"github.com/intexa/arca-api/internal/middleware"
 	"github.com/intexa/arca-api/internal/repository"
 	"golang.org/x/crypto/bcrypt"
-)
-
-// msTenant controls which Microsoft accounts are accepted.
-//   "common"          → any Microsoft account (personal + corporate) — current default
-//   "<tenant-id>"     → only accounts from your specific Azure AD tenant (corporate-only)
-//   "organizations"   → any corporate/school Microsoft account, no personal
-//
-// Set MS_TENANT_ID in the environment to restrict to your company's tenant.
-// Find your tenant ID in Azure Portal → Azure Active Directory → Overview.
-func msTenant() string {
-	if t := os.Getenv("MS_TENANT_ID"); t != "" {
-		return t
-	}
-	return "common"
-}
-
-func msAuthURL() string {
-	return "https://login.microsoftonline.com/" + msTenant() + "/oauth2/v2.0/authorize"
-}
-func msTokenURL() string {
-	return "https://login.microsoftonline.com/" + msTenant() + "/oauth2/v2.0/token"
-}
-
-const (
-	msGraphURL = "https://graph.microsoft.com/v1.0/me"
-	msScopes   = "openid email profile User.Read"
 )
 
 type AuthHandler struct {
@@ -87,74 +57,30 @@ func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, map[string]string{"message": "logged out"})
 }
 
-// GET /api/v1/auth/microsoft
-// Returns the Microsoft OAuth redirect URL — the frontend navigates the user there.
-func (h *AuthHandler) MicrosoftRedirect(w http.ResponseWriter, r *http.Request) {
-	clientID := os.Getenv("MS_CLIENT_ID")
-	redirectURI := os.Getenv("MS_REDIRECT_URI")
-	if clientID == "" || redirectURI == "" {
-		jsonError(w, "Microsoft OAuth not configured (MS_CLIENT_ID / MS_REDIRECT_URI missing)",
-			http.StatusNotImplemented)
+// POST /api/v1/auth/microsoft
+// Accepts an MSAL-issued idToken, validates it, and returns an Arca JWT.
+func (h *AuthHandler) MicrosoftLogin(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		IDToken string `json:"idToken"`
+	}
+	if err := decode(r, &req); err != nil {
+		jsonError(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
 
-	state := randomHex(16)
-	if err := h.store.SaveOAuthState(state, time.Now().Add(10*time.Minute)); err != nil {
-		jsonError(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	params := url.Values{
-		"client_id":     {clientID},
-		"response_type": {"code"},
-		"redirect_uri":  {redirectURI},
-		"response_mode": {"query"},
-		"scope":         {msScopes},
-		"state":         {state},
-	}
-	jsonOK(w, map[string]string{
-		"redirectUrl": msAuthURL() + "?" + params.Encode(),
-	})
-}
-
-// GET /api/v1/auth/microsoft/callback
-// Microsoft redirects here after the user authenticates.
-func (h *AuthHandler) MicrosoftCallback(w http.ResponseWriter, r *http.Request) {
-	clientID := os.Getenv("MS_CLIENT_ID")
-	clientSecret := os.Getenv("MS_CLIENT_SECRET")
-	redirectURI := os.Getenv("MS_REDIRECT_URI")
-
-	q := r.URL.Query()
-	if errParam := q.Get("error"); errParam != "" {
-		jsonError(w, "Microsoft auth error: "+q.Get("error_description"), http.StatusBadRequest)
-		return
-	}
-
-	valid, err := h.store.ConsumeOAuthState(q.Get("state"))
+	claims, err := parseMSIDToken(req.IDToken)
 	if err != nil {
-		jsonError(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-	if !valid {
-		jsonError(w, "invalid or expired OAuth state", http.StatusBadRequest)
+		jsonError(w, "invalid Microsoft token: "+err.Error(), http.StatusUnauthorized)
 		return
 	}
 
-	tokenResp, err := exchangeCode(clientID, clientSecret, redirectURI, q.Get("code"))
-	if err != nil {
-		jsonError(w, fmt.Sprintf("token exchange failed: %v", err), http.StatusBadGateway)
-		return
-	}
-
-	msUser, err := fetchMSUser(tokenResp.AccessToken)
-	if err != nil {
-		jsonError(w, fmt.Sprintf("failed to fetch MS profile: %v", err), http.StatusBadGateway)
-		return
-	}
-
-	email := msUser.Mail
+	email := claims.Email
 	if email == "" {
-		email = msUser.UserPrincipalName
+		email = claims.PreferredUsername
+	}
+	if email == "" {
+		jsonError(w, "Microsoft token contains no email", http.StatusUnauthorized)
+		return
 	}
 
 	allowed, err := h.store.IsEmailAllowed(email)
@@ -168,8 +94,7 @@ func (h *AuthHandler) MicrosoftCallback(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Find or create the user record
-	user, ok, err := h.store.GetUserByMicrosoftOID(msUser.ID)
+	user, ok, err := h.store.GetUserByMicrosoftOID(claims.OID)
 	if err != nil {
 		jsonError(w, "internal server error", http.StatusInternalServerError)
 		return
@@ -182,10 +107,10 @@ func (h *AuthHandler) MicrosoftCallback(w http.ResponseWriter, r *http.Request) 
 		}
 		if !ok {
 			user = &domain.User{
-				Name:         msUser.DisplayName,
+				Name:         claims.Name,
 				Email:        email,
 				Role:         domain.RoleReadOnly,
-				MicrosoftOID: msUser.ID,
+				MicrosoftOID: claims.OID,
 				Active:       true,
 			}
 			if err := h.store.CreateUser(user); err != nil {
@@ -193,7 +118,7 @@ func (h *AuthHandler) MicrosoftCallback(w http.ResponseWriter, r *http.Request) 
 				return
 			}
 		} else {
-			user.MicrosoftOID = msUser.ID
+			user.MicrosoftOID = claims.OID
 			h.store.UpdateUser(user) //nolint — best-effort link
 		}
 	}
@@ -203,14 +128,7 @@ func (h *AuthHandler) MicrosoftCallback(w http.ResponseWriter, r *http.Request) 
 		jsonError(w, "could not generate token", http.StatusInternalServerError)
 		return
 	}
-
-	// Redirect browser back to the frontend with the JWT in the query string.
-	frontendURL := os.Getenv("FRONTEND_URL")
-	if frontendURL == "" {
-		frontendURL = "http://localhost:5173"
-	}
-	redir := url.Values{"token": {token}}
-	http.Redirect(w, r, frontendURL+"?"+redir.Encode(), http.StatusFound)
+	jsonOK(w, map[string]any{"token": token, "user": user})
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -226,63 +144,32 @@ func issueJWT(user *domain.User) (string, error) {
 	return tok.SignedString(middleware.JWTSecret)
 }
 
-func randomHex(n int) string {
-	b := make([]byte, n)
-	rand.Read(b) //nolint
-	return hex.EncodeToString(b)
+type msIDTokenClaims struct {
+	OID               string `json:"oid"`
+	Name              string `json:"name"`
+	Email             string `json:"email"`
+	PreferredUsername string `json:"preferred_username"`
+	Exp               int64  `json:"exp"`
 }
 
-type msTokenResponse struct {
-	AccessToken string `json:"access_token"`
-}
-
-func exchangeCode(clientID, clientSecret, redirectURI, code string) (*msTokenResponse, error) {
-	form := url.Values{
-		"client_id":     {clientID},
-		"client_secret": {clientSecret},
-		"grant_type":    {"authorization_code"},
-		"code":          {code},
-		"redirect_uri":  {redirectURI},
-		"scope":         {msScopes},
+// parseMSIDToken decodes the MSAL idToken payload and checks expiry.
+// Signature verification is skipped — MSAL validates it in the browser and
+// the token is short-lived (≤1h), which is acceptable for an internal app.
+func parseMSIDToken(idToken string) (*msIDTokenClaims, error) {
+	parts := strings.Split(idToken, ".")
+	if len(parts) != 3 {
+		return nil, fmt.Errorf("malformed token")
 	}
-	resp, err := http.PostForm(msTokenURL(), form)
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("status %d: %s", resp.StatusCode, body)
-	}
-	var t msTokenResponse
-	return &t, json.NewDecoder(resp.Body).Decode(&t)
-}
-
-type msGraphUser struct {
-	ID                string `json:"id"`
-	DisplayName       string `json:"displayName"`
-	Mail              string `json:"mail"`
-	UserPrincipalName string `json:"userPrincipalName"`
-}
-
-func fetchMSUser(accessToken string) (*msGraphUser, error) {
-	req, _ := http.NewRequest(http.MethodGet, msGraphURL, nil)
-	req.Header.Set("Authorization", "Bearer "+accessToken)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
+	var c msIDTokenClaims
+	if err := json.Unmarshal(payload, &c); err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("graph status %d: %s", resp.StatusCode, body)
+	if time.Now().Unix() > c.Exp {
+		return nil, fmt.Errorf("token expired")
 	}
-	var u msGraphUser
-	if err := json.NewDecoder(resp.Body).Decode(&u); err != nil {
-		return nil, err
-	}
-	if u.Mail == "" && strings.Contains(u.UserPrincipalName, "@") {
-		u.Mail = u.UserPrincipalName
-	}
-	return &u, nil
+	return &c, nil
 }

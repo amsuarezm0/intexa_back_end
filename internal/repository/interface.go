@@ -25,10 +25,6 @@ type Store interface {
 	UpdateUser(u *domain.User) (bool, error)
 	DeleteUser(id string) (bool, error)
 
-	// ── Microsoft OAuth state (CSRF) ─────────────────────────────────────────
-	SaveOAuthState(state string, expiresAt time.Time) error
-	ConsumeOAuthState(state string) (bool, error) // returns true if state was valid & unused
-
 	// ── Access control ───────────────────────────────────────────────────────
 	IsEmailAllowed(email string) (bool, error) // domain allowlist OR pre-existing user
 	GetAllowedDomains() ([]string, error)

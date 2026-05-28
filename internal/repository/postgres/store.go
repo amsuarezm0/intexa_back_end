@@ -190,32 +190,6 @@ func (s *Store) DeleteUser(id string) (bool, error) {
 	return tag.RowsAffected() > 0, err
 }
 
-// ── OAuth state ───────────────────────────────────────────────────────────────
-
-func (s *Store) SaveOAuthState(state string, expiresAt time.Time) error {
-	_, err := s.pool.Exec(bg(),
-		`INSERT INTO oauth_states (state, expires_at) VALUES ($1,$2)
-		 ON CONFLICT (state) DO UPDATE SET expires_at=EXCLUDED.expires_at`,
-		state, expiresAt)
-	// Clean up expired states opportunistically
-	s.pool.Exec(bg(), `DELETE FROM oauth_states WHERE expires_at < now()`) //nolint
-	return err
-}
-
-func (s *Store) ConsumeOAuthState(state string) (bool, error) {
-	var expiresAt time.Time
-	err := s.pool.QueryRow(bg(),
-		`DELETE FROM oauth_states WHERE state=$1 RETURNING expires_at`, state,
-	).Scan(&expiresAt)
-	if err == pgx.ErrNoRows {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	return time.Now().Before(expiresAt), nil
-}
-
 // ── Access control ────────────────────────────────────────────────────────────
 
 func (s *Store) IsEmailAllowed(email string) (bool, error) {

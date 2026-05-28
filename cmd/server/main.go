@@ -90,8 +90,7 @@ func main() {
 	r.Route("/api/v1", func(r chi.Router) {
 		// Public
 		r.Post("/auth/login", auth.Login)
-		r.Get("/auth/microsoft", auth.MicrosoftRedirect)
-		r.Get("/auth/microsoft/callback", auth.MicrosoftCallback)
+		r.Post("/auth/microsoft", auth.MicrosoftLogin)
 
 		// Protected
 		r.Group(func(r chi.Router) {

@@ -15,10 +15,6 @@ import (
 // Compile-time check.
 var _ repository.Store = (*Store)(nil)
 
-type oauthState struct {
-	expiresAt time.Time
-}
-
 type budgetKey struct {
 	category string
 	year     int
@@ -29,7 +25,6 @@ type Store struct {
 	mu           sync.RWMutex
 	transactions map[string]*domain.Transaction
 	users        map[string]*domain.User
-	oauthStates  map[string]oauthState
 	domains      map[string]struct{}
 	categories   []domain.Category
 	settings     map[string]domain.Settings
@@ -43,7 +38,6 @@ func New() *Store {
 	s := &Store{
 		transactions: make(map[string]*domain.Transaction),
 		users:        make(map[string]*domain.User),
-		oauthStates:  make(map[string]oauthState),
 		domains:      make(map[string]struct{}),
 		budgets:      make(map[budgetKey]float64),
 		settings:     make(map[string]domain.Settings),
@@ -337,25 +331,6 @@ func (s *Store) DeleteUser(id string) (bool, error) {
 	return true, nil
 }
 
-// ── OAuth state ───────────────────────────────────────────────────────────────
-
-func (s *Store) SaveOAuthState(state string, expiresAt time.Time) error {
-	s.mu.Lock()
-	s.oauthStates[state] = oauthState{expiresAt: expiresAt}
-	s.mu.Unlock()
-	return nil
-}
-
-func (s *Store) ConsumeOAuthState(state string) (bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	st, ok := s.oauthStates[state]
-	if !ok {
-		return false, nil
-	}
-	delete(s.oauthStates, state)
-	return time.Now().Before(st.expiresAt), nil
-}
 
 // ── Access control ────────────────────────────────────────────────────────────
 
