@@ -154,7 +154,8 @@ LANGUAGE sql STABLE AS $$
         COALESCE(a.actual_amount, 0)        AS actual,
         b.monthly - COALESCE(a.actual_amount, 0) AS deviation,
         (b.monthly - COALESCE(a.actual_amount, 0)) >= 0 AS is_positive
-    FROM budget_lines b, params p
+    FROM budget_lines b
+    CROSS JOIN params p
     LEFT JOIN actuals a ON a.category = b.category
     WHERE b.year = p.yr AND b.month = p.mo
     ORDER BY actual DESC NULLS LAST;

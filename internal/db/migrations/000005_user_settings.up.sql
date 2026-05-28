@@ -1,0 +1,3 @@
+ALTER TABLE settings ADD COLUMN IF NOT EXISTS user_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE settings DROP CONSTRAINT IF EXISTS settings_pkey;
+ALTER TABLE settings ADD PRIMARY KEY (user_id, key);

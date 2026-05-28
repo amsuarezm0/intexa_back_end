@@ -2,6 +2,7 @@ package handler
 
 import (
 	"fmt"
+	"math"
 	"net/http"
 	"sort"
 	"time"
@@ -29,54 +30,36 @@ func (h *ReportsHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	budgets, err := h.store.GetBudgets()
-	if err != nil {
-		jsonError(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
 	now := time.Now()
-
-	var totalMonthlyBudget float64
-	budgetByCategory := map[string]float64{}
-	for _, b := range budgets {
-		budgetByCategory[b.Category] = b.Monthly
-		totalMonthlyBudget += b.Monthly
-	}
-
-	var chart []domain.ReportDataPoint
-	var pie []domain.PieSlice
-	var deviationTable []domain.DeviationRow
-	var projectedClose, probability float64
-	var insight string
-
 	curY, curM, _ := now.Date()
 	curQ := (int(curM)-1)/3 + 1
 
+	var chart []domain.ReportDataPoint
+	var pie []domain.PieSlice
+	var categoryTable []domain.CategoryRow
+	var projectedClose, probability float64
+	var insight string
+
 	switch period {
 
-	// ── Trimestral: Q1–Q4 del año en curso ────────────────────────────────────
+	// ── Trimestral: Q1–Q4 del año en curso ───────────────────────────────────
 	case "trimestral":
 		chart = make([]domain.ReportDataPoint, 4)
 		for q := 1; q <= 4; q++ {
-			_, exp := quarterlyTotals(all, curY, q)
-			var ej float64
+			var inc, exp float64
 			if q <= curQ {
-				ej = exp
+				inc, exp = quarterlyTotals(all, curY, q)
 			}
 			chart[q-1] = domain.ReportDataPoint{
-				Name:        fmt.Sprintf("Q%d %d", q, curY),
-				Ejecutado:   ej,
-				Presupuesto: totalMonthlyBudget * 3,
+				Name:     fmt.Sprintf("Q%d %d", q, curY),
+				Ingresos: inc,
+				Egresos:  exp,
 			}
 		}
-
-		// Category breakdown: trimestre en curso
 		pie = categoryBreakdownRange(all, quarterStart(curY, curQ), now)
+		categoryTable = categoryComparisonTable(all, quarterStart(curY, curQ), now,
+			quarterStart(curY, curQ-1), quarterStart(curY, curQ))
 
-		// Deviation: trimestre en curso vs 3× presupuesto mensual
-		deviationTable = periodDeviationTable(all, budgets, quarterStart(curY, curQ), now, 3)
-
-		// Projection: promedio neto trimestral × trimestres restantes
 		var sumQ float64
 		lookQ := 0
 		for i := 1; i <= 4; i++ {
@@ -98,76 +81,67 @@ func (h *ReportsHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 		}
 		quartersLeft := float64(4 - curQ)
 		projectedClose = currentBalance(all) + avgQ*quartersLeft
-		probability = complianceRate(all, totalMonthlyBudget, now, 4, "quarter")
-		if avgQ > 0 {
+		probability = netPositiveRate(all, 4, "quarter", now)
+		if avgQ >= 0 {
 			insight = fmt.Sprintf("Promedio neto positivo en los últimos %d trimestres: %s/trimestre.", lookQ, formatCOP(avgQ))
 		} else {
 			insight = fmt.Sprintf("Promedio neto negativo en los últimos %d trimestres: %s/trimestre. Revisa egresos.", lookQ, formatCOP(avgQ))
 		}
 
-	// ── Anual: los 12 meses del año en curso (ENE–DIC) ────────────────────────
+	// ── Anual: los 12 meses del año en curso ─────────────────────────────────
 	case "anual":
 		chart = make([]domain.ReportDataPoint, 12)
 		for m := 1; m <= 12; m++ {
-			_, exp := monthlyTotals(all, curY, time.Month(m))
-			var ej float64
+			var inc, exp float64
 			if time.Month(m) <= curM {
-				ej = exp
+				inc, exp = monthlyTotals(all, curY, time.Month(m))
 			}
 			chart[m-1] = domain.ReportDataPoint{
-				Name:        spanishMonths[time.Month(m)],
-				Ejecutado:   ej,
-				Presupuesto: totalMonthlyBudget,
+				Name:     spanishMonths[time.Month(m)],
+				Ingresos: inc,
+				Egresos:  exp,
 			}
 		}
-
-		// Category breakdown: año en curso (YTD)
 		pie = categoryBreakdownRange(all, time.Date(curY, 1, 1, 0, 0, 0, 0, now.Location()), now)
+		prevYearStart := time.Date(curY-1, 1, 1, 0, 0, 0, 0, now.Location())
+		prevYearEnd := time.Date(curY-1, curM, 1, 0, 0, 0, 0, now.Location())
+		categoryTable = categoryComparisonTable(all,
+			time.Date(curY, 1, 1, 0, 0, 0, 0, now.Location()), now,
+			prevYearStart, prevYearEnd)
 
-		// Deviation: año en curso vs presupuesto anual
-		deviationTable = periodDeviationTable(all, budgets, time.Date(curY, 1, 1, 0, 0, 0, 0, now.Location()), now, int(curM))
-
-		// Projection: proyección al cierre del año basada en ritmo YTD
-		ytdInc, ytdExp := func() (float64, float64) {
-			var i, e float64
-			for m := 1; m <= int(curM); m++ {
-				inc, exp := monthlyTotals(all, curY, time.Month(m))
-				i += inc
-				e += exp
-			}
-			return i, e
-		}()
+		var ytdInc, ytdExp float64
+		for m := 1; m <= int(curM); m++ {
+			inc, exp := monthlyTotals(all, curY, time.Month(m))
+			ytdInc += inc
+			ytdExp += exp
+		}
 		avgMonthNet := (ytdInc - ytdExp) / float64(curM)
 		monthsLeft := float64(12 - int(curM))
 		projectedClose = currentBalance(all) + avgMonthNet*monthsLeft
-		probability = complianceRate(all, totalMonthlyBudget, now, 12, "month")
-		if avgMonthNet > 0 {
+		probability = netPositiveRate(all, 12, "month", now)
+		if avgMonthNet >= 0 {
 			insight = fmt.Sprintf("Ritmo mensual positivo en lo que va del año %d: %s/mes promedio.", curY, formatCOP(avgMonthNet))
 		} else {
 			insight = fmt.Sprintf("Ritmo mensual negativo en lo que va del año %d: %s/mes. Revisa egresos.", curY, formatCOP(avgMonthNet))
 		}
 
-	// ── Mensual: últimos 6 meses (rolling) ────────────────────────────────────
+	// ── Mensual: últimos 6 meses (rolling) ───────────────────────────────────
 	default:
 		chart = make([]domain.ReportDataPoint, 6)
 		for i := 0; i < 6; i++ {
 			t := now.AddDate(0, -(5-i), 0)
-			_, exp := monthlyTotals(all, t.Year(), t.Month())
+			inc, exp := monthlyTotals(all, t.Year(), t.Month())
 			chart[i] = domain.ReportDataPoint{
-				Name:        spanishMonths[t.Month()],
-				Ejecutado:   exp,
-				Presupuesto: totalMonthlyBudget,
+				Name:     spanishMonths[t.Month()],
+				Ingresos: inc,
+				Egresos:  exp,
 			}
 		}
-
-		// Category breakdown: últimos 3 meses
 		pie = categoryBreakdownRange(all, now.AddDate(0, -3, 0), now)
+		curMonthStart := time.Date(curY, curM, 1, 0, 0, 0, 0, now.Location())
+		prevMonthStart := curMonthStart.AddDate(0, -1, 0)
+		categoryTable = categoryComparisonTable(all, curMonthStart, now, prevMonthStart, curMonthStart)
 
-		// Deviation: mes en curso
-		deviationTable = periodDeviationTable(all, budgets,
-			time.Date(curY, curM, 1, 0, 0, 0, 0, now.Location()), now, 1)
-
-		// Projection: promedio mensual × meses restantes del año
 		var sumNet float64
 		for i := 1; i <= 3; i++ {
 			t := now.AddDate(0, -i, 0)
@@ -177,8 +151,8 @@ func (h *ReportsHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 		avgMonthlyNet := sumNet / 3
 		monthsRemaining := float64(12 - int(curM))
 		projectedClose = currentBalance(all) + avgMonthlyNet*monthsRemaining
-		probability = complianceRate(all, totalMonthlyBudget, now, 6, "month")
-		if avgMonthlyNet > 0 {
+		probability = netPositiveRate(all, 6, "month", now)
+		if avgMonthlyNet >= 0 {
 			insight = "Flujo neto promedio positivo en los últimos 3 meses: " + formatCOP(avgMonthlyNet) + "/mes."
 		} else {
 			insight = "Flujo neto promedio negativo en los últimos 3 meses: " + formatCOP(avgMonthlyNet) + "/mes. Revisa egresos."
@@ -188,7 +162,7 @@ func (h *ReportsHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, domain.ReportSummary{
 		CashFlowChart:     chart,
 		CategoryBreakdown: pie,
-		DeviationTable:    deviationTable,
+		CategoryTable:     categoryTable,
 		Annual: domain.AnnualProjection{
 			ProjectedClose: projectedClose,
 			Probability:    probability,
@@ -203,14 +177,17 @@ func (h *ReportsHandler) Export(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, map[string]string{"message": "export feature requires spreadsheet library integration"})
 }
 
-// ── helpers ────────────────────────────────────────────────────────────────────
+// ── helpers ───────────────────────────────────────────────────────────────────
 
 func quarterStart(year, quarter int) time.Time {
+	for quarter <= 0 {
+		quarter += 4
+		year--
+	}
 	month := time.Month((quarter-1)*3 + 1)
 	return time.Date(year, month, 1, 0, 0, 0, 0, time.Local)
 }
 
-// categoryBreakdownRange builds a pie of egresos between from..to.
 func categoryBreakdownRange(txs []*domain.Transaction, from, to time.Time) []domain.PieSlice {
 	catMap := map[string]float64{}
 	var total float64
@@ -218,7 +195,11 @@ func categoryBreakdownRange(txs []*domain.Transaction, from, to time.Time) []dom
 		if t.IsProjection || t.Type != domain.TypeEgreso {
 			continue
 		}
-		if t.CreatedAt.Before(from) || t.CreatedAt.After(to) {
+		d, err := time.Parse("2006-01-02", t.Date)
+		if err != nil {
+			d = t.CreatedAt
+		}
+		if d.Before(from) || d.After(to) {
 			continue
 		}
 		catMap[t.Category] += t.Amount
@@ -235,62 +216,50 @@ func categoryBreakdownRange(txs []*domain.Transaction, from, to time.Time) []dom
 	return pie
 }
 
-// periodDeviationTable compares actual activity in [from,to] against
-// budgetMultiplier × monthly budget per category.
-func periodDeviationTable(txs []*domain.Transaction, budgets []domain.BudgetLine, from, to time.Time, budgetMultiplier int) []domain.DeviationRow {
-	catInc := map[string]float64{}
-	catExp := map[string]float64{}
+// categoryComparisonTable builds per-category spending for [from,to] vs [prevFrom,prevTo].
+func categoryComparisonTable(txs []*domain.Transaction, from, to, prevFrom, prevTo time.Time) []domain.CategoryRow {
+	curr := map[string]float64{}
+	prev := map[string]float64{}
 	for _, t := range txs {
-		if t.IsProjection {
+		if t.IsProjection || t.Type != domain.TypeEgreso {
 			continue
 		}
-		if t.CreatedAt.Before(from) || t.CreatedAt.After(to) {
-			continue
+		d, err := time.Parse("2006-01-02", t.Date)
+		if err != nil {
+			d = t.CreatedAt
 		}
-		if t.Type == domain.TypeIngreso {
-			catInc[t.Category] += t.Amount
-		} else {
-			catExp[t.Category] += t.Amount
+		if !d.Before(from) && !d.After(to) {
+			curr[t.Category] += t.Amount
+		}
+		if !d.Before(prevFrom) && !d.After(prevTo) {
+			prev[t.Category] += t.Amount
 		}
 	}
-
-	seen := map[string]bool{}
-	rows := []domain.DeviationRow{}
-	for _, b := range budgets {
-		seen[b.Category] = true
-		periodBudget := b.Monthly * float64(budgetMultiplier)
-		actual := catExp[b.Category]
-		if actual == 0 {
-			actual = catInc[b.Category]
+	rows := []domain.CategoryRow{}
+	for cat, amount := range curr {
+		p := prev[cat]
+		var change float64
+		if p > 0 {
+			change = math.Round(((amount-p)/p)*1000) / 10 // 1 decimal
 		}
-		dev := periodBudget - actual
-		rows = append(rows, domain.DeviationRow{
-			Category:   b.Category,
-			Budget:     periodBudget,
-			Actual:     actual,
-			Deviation:  dev,
-			IsPositive: dev >= 0,
+		rows = append(rows, domain.CategoryRow{
+			Category:   cat,
+			Amount:     amount,
+			Prev:       p,
+			Change:     change,
+			IsPositive: amount <= p || p == 0,
 		})
 	}
-	for cat, v := range catExp {
-		if !seen[cat] {
-			rows = append(rows, domain.DeviationRow{
-				Category: cat, Budget: 0, Actual: v,
-				Deviation: -v, IsPositive: false,
-			})
-		}
-	}
-	sort.Slice(rows, func(i, j int) bool { return rows[i].Actual > rows[j].Actual })
+	sort.Slice(rows, func(i, j int) bool { return rows[i].Amount > rows[j].Amount })
 	return rows
 }
 
-// complianceRate returns the % of recent periods where egresos stayed within budget.
-func complianceRate(txs []*domain.Transaction, totalMonthlyBudget float64, now time.Time, lookback int, granularity string) float64 {
-	compliant := 0
+// netPositiveRate returns the % of recent periods where net flow was positive.
+func netPositiveRate(txs []*domain.Transaction, lookback int, granularity string, now time.Time) float64 {
 	curQ := (int(now.Month())-1)/3 + 1
+	positive := 0
 	for i := 1; i <= lookback; i++ {
-		var exp float64
-		var budget float64
+		var inc, exp float64
 		switch granularity {
 		case "quarter":
 			q := curQ - i
@@ -299,16 +268,14 @@ func complianceRate(txs []*domain.Transaction, totalMonthlyBudget float64, now t
 				q += 4
 				y--
 			}
-			_, exp = quarterlyTotals(txs, y, q)
-			budget = totalMonthlyBudget * 3
+			inc, exp = quarterlyTotals(txs, y, q)
 		default:
 			t := now.AddDate(0, -i, 0)
-			_, exp = monthlyTotals(txs, t.Year(), t.Month())
-			budget = totalMonthlyBudget
+			inc, exp = monthlyTotals(txs, t.Year(), t.Month())
 		}
-		if exp <= budget {
-			compliant++
+		if inc >= exp {
+			positive++
 		}
 	}
-	return pct(float64(compliant), float64(lookback))
+	return pct(float64(positive), float64(lookback))
 }

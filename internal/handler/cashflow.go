@@ -38,7 +38,7 @@ func (h *CashFlowHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 			if t.IsProjection {
 				continue
 			}
-			ty, tm, td := t.CreatedAt.Date()
+			ty, tm, td := txDate(t)
 			if ty == dy && tm == dm && td == dd {
 				if t.Type == domain.TypeIngreso {
 					ing += t.Amount
@@ -70,45 +70,23 @@ func (h *CashFlowHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 	}
 	projected := balance + pendingInc - pendingExp
 
-	// ── Week-over-week change ─────────────────────────────────────────────
-	var thisWeekNet, prevWeekNet float64
-	for i := 6; i >= 0; i-- {
-		day := now.AddDate(0, 0, -i)
-		dy, dm, dd := day.Date()
-		for _, t := range all {
-			if t.IsProjection {
-				continue
-			}
-			ty, tm, td := t.CreatedAt.Date()
-			if ty == dy && tm == dm && td == dd {
-				if t.Type == domain.TypeIngreso {
-					thisWeekNet += t.Amount
-				} else {
-					thisWeekNet -= t.Amount
-				}
-			}
-		}
-	}
-	for i := 13; i >= 7; i-- {
-		day := now.AddDate(0, 0, -i)
-		dy, dm, dd := day.Date()
-		for _, t := range all {
-			if t.IsProjection {
-				continue
-			}
-			ty, tm, td := t.CreatedAt.Date()
-			if ty == dy && tm == dm && td == dd {
-				if t.Type == domain.TypeIngreso {
-					prevWeekNet += t.Amount
-				} else {
-					prevWeekNet -= t.Amount
-				}
-			}
-		}
-	}
+	// ── Month-over-month net change ───────────────────────────────────────
+	cy, cm, _ := now.Date()
+	prevTime := now.AddDate(0, -1, 0)
+	py, pm, _ := prevTime.Date()
+	thisInc, thisExp := monthlyTotals(all, cy, cm)
+	prevInc, prevExp := monthlyTotals(all, py, pm)
+	thisNet := thisInc - thisExp
+	prevNet := prevInc - prevExp
 	projectedChange := 0.0
-	if prevWeekNet != 0 {
-		projectedChange = (thisWeekNet - prevWeekNet) / math.Abs(prevWeekNet) * 100
+	if prevNet != 0 {
+		raw := (thisNet - prevNet) / math.Abs(prevNet) * 100
+		projectedChange = math.Round(raw*10) / 10
+		if projectedChange > 999 {
+			projectedChange = 999
+		} else if projectedChange < -999 {
+			projectedChange = -999
+		}
 	}
 
 	// ── Alerts: pending transactions ─────────────────────────────────────

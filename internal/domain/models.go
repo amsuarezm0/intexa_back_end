@@ -57,12 +57,12 @@ type Category struct {
 }
 
 type StatCard struct {
-	Title      string `json:"title"`
-	Value      string `json:"value"`
-	Change     string `json:"change"`
-	IsPositive bool   `json:"isPositive"`
-	TrendText  string `json:"trendText"`
-	Icon       string `json:"icon"`
+	Title      string  `json:"title"`
+	Value      float64 `json:"value"`
+	Change     string  `json:"change"`
+	IsPositive bool    `json:"isPositive"`
+	TrendText  string  `json:"trendText"`
+	Icon       string  `json:"icon"`
 }
 
 type ChartDataPoint struct {
@@ -95,6 +95,8 @@ type WeeklyComparison struct {
 type DashboardSummary struct {
 	Stats           []StatCard         `json:"stats"`
 	NetFlow         float64            `json:"netFlow"`
+	MonthIncome     float64            `json:"monthIncome"`
+	MonthExpense    float64            `json:"monthExpense"`
 	ChartData       []ChartDataPoint   `json:"chartData"`
 	ExpensePie      []PieSlice         `json:"expensePie"`
 	Alerts          []Alert            `json:"alerts"`
@@ -140,17 +142,17 @@ type ProjectionSummary struct {
 }
 
 type ReportDataPoint struct {
-	Name        string  `json:"name"`
-	Ejecutado   float64 `json:"ejecutado"`
-	Presupuesto float64 `json:"presupuesto"`
+	Name     string  `json:"name"`
+	Ingresos float64 `json:"ingresos"`
+	Egresos  float64 `json:"egresos"`
 }
 
-type DeviationRow struct {
+type CategoryRow struct {
 	Category   string  `json:"category"`
-	Budget     float64 `json:"budget"`
-	Actual     float64 `json:"actual"`
-	Deviation  float64 `json:"deviation"`
-	IsPositive bool    `json:"isPositive"`
+	Amount     float64 `json:"amount"`
+	Prev       float64 `json:"prev"`       // same period prior cycle
+	Change     float64 `json:"change"`     // % change vs prev
+	IsPositive bool    `json:"isPositive"` // true = spending decreased
 }
 
 type AnnualProjection struct {
@@ -160,11 +162,11 @@ type AnnualProjection struct {
 }
 
 type ReportSummary struct {
-	CashFlowChart    []ReportDataPoint `json:"cashFlowChart"`
-	CategoryBreakdown []PieSlice       `json:"categoryBreakdown"`
-	DeviationTable   []DeviationRow    `json:"deviationTable"`
-	Annual           AnnualProjection  `json:"annual"`
-	ComplianceRate   float64           `json:"complianceRate"`
+	CashFlowChart     []ReportDataPoint `json:"cashFlowChart"`
+	CategoryBreakdown []PieSlice        `json:"categoryBreakdown"`
+	CategoryTable     []CategoryRow     `json:"categoryTable"`
+	Annual            AnnualProjection  `json:"annual"`
+	ComplianceRate    float64           `json:"complianceRate"`
 }
 
 type Settings struct {
@@ -183,6 +185,13 @@ type SiigoConfig struct {
 	Connected bool      `json:"connected"`
 	LastSync  time.Time `json:"lastSync,omitempty"`
 	TokenExp  time.Time `json:"tokenExp,omitempty"`
+	AccessKey string    `json:"-"`
+}
+
+type BankBalance struct {
+	Amount    float64   `json:"amount"`
+	UpdatedAt time.Time `json:"updatedAt"`
+	UpdatedBy string    `json:"updatedBy"`
 }
 
 type SiigoConnectRequest struct {
@@ -199,7 +208,7 @@ type SiigoSyncRequest struct {
 type SiigoSyncResult struct {
 	InvoicesImported  int `json:"invoicesImported"`
 	PurchasesImported int `json:"purchasesImported"`
-	Skipped           int `json:"skipped"`
+	Updated           int `json:"updated"`
 }
 
 type ActivityLog struct {

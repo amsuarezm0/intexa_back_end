@@ -12,10 +12,9 @@ type Store interface {
 	GetAllTransactions() ([]*domain.Transaction, error)
 	GetTransactionByID(id string) (*domain.Transaction, bool, error)
 	CreateTransaction(t *domain.Transaction) error
-	ImportTransaction(t *domain.Transaction) error
+	ImportTransaction(t *domain.Transaction) (bool, error)
 	UpdateTransaction(t *domain.Transaction) (bool, error)
 	DeleteTransaction(id string) (bool, error)
-	ExternalIDExists(externalID string) (bool, error)
 
 	// ── Users ────────────────────────────────────────────────────────────────
 	GetUserByEmail(email string) (*domain.User, bool, error)
@@ -40,8 +39,8 @@ type Store interface {
 	GetCategories() ([]domain.Category, error)
 
 	// ── Settings ─────────────────────────────────────────────────────────────
-	GetSettings() (domain.Settings, error)
-	UpdateSettings(st domain.Settings) error
+	GetSettings(userID string) (domain.Settings, error)
+	UpdateSettings(userID string, st domain.Settings) error
 
 	// ── Activity logs ────────────────────────────────────────────────────────
 	GetActivityLogs() ([]domain.ActivityLog, error)
@@ -55,4 +54,8 @@ type Store interface {
 	GetSiigoConfig() (*domain.SiigoConfig, error)
 	SetSiigoConfig(cfg domain.SiigoConfig) error
 	UpdateSiigoLastSync(t time.Time) error
+
+	// ── Bank balance ──────────────────────────────────────────────────────────
+	GetBankBalance() (*domain.BankBalance, error)
+	SetBankBalance(b domain.BankBalance) error
 }

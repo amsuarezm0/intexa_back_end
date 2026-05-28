@@ -66,13 +66,24 @@ func currentBalance(txs []*domain.Transaction) float64 {
 	return bal
 }
 
+// txDate parses a transaction's accounting Date field (YYYY-MM-DD).
+// Falls back to CreatedAt if the field is malformed.
+func txDate(t *domain.Transaction) (int, time.Month, int) {
+	d, err := time.Parse("2006-01-02", t.Date)
+	if err != nil {
+		d = t.CreatedAt
+	}
+	y, m, day := d.Date()
+	return y, m, day
+}
+
 // monthlyTotals sums ingresos and egresos for a given year/month (non-projections only).
 func monthlyTotals(txs []*domain.Transaction, year int, month time.Month) (income, expense float64) {
 	for _, t := range txs {
 		if t.IsProjection {
 			continue
 		}
-		y, m, _ := t.CreatedAt.Date()
+		y, m, _ := txDate(t)
 		if y != year || m != month {
 			continue
 		}
@@ -93,7 +104,7 @@ func quarterlyTotals(txs []*domain.Transaction, year, quarter int) (income, expe
 		if t.IsProjection {
 			continue
 		}
-		y, m, _ := t.CreatedAt.Date()
+		y, m, _ := txDate(t)
 		if y != year || m < start || m > end {
 			continue
 		}
@@ -112,7 +123,7 @@ func yearlyTotals(txs []*domain.Transaction, year int) (income, expense float64)
 		if t.IsProjection {
 			continue
 		}
-		y, _, _ := t.CreatedAt.Date()
+		y, _, _ := txDate(t)
 		if y != year {
 			continue
 		}

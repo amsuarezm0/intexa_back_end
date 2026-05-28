@@ -1,5 +1,7 @@
 package siigo
 
+import "encoding/json"
+
 // Auth
 
 type SignInRequest struct {
@@ -34,7 +36,7 @@ type PurchaseListResponse struct {
 // Invoice (venta / Ingreso)
 
 type Invoice struct {
-	ID           int             `json:"id"`
+	ID           string          `json:"id"`
 	Document     DocumentRef     `json:"document"`
 	Prefix       string          `json:"prefix"`
 	Number       int             `json:"number"`
@@ -72,15 +74,41 @@ type PaymentTerm struct {
 	Value   float64 `json:"value"`
 }
 
+// Discount handles both a plain number and an object from Siigo.
+type Discount struct {
+	Percentage float64
+	Value      float64
+}
+
+func (d *Discount) UnmarshalJSON(b []byte) error {
+	// plain number (purchases)
+	var n float64
+	if err := json.Unmarshal(b, &n); err == nil {
+		d.Percentage = n
+		return nil
+	}
+	// object (invoices)
+	var obj struct {
+		Percentage float64 `json:"percentage"`
+		Value      float64 `json:"value"`
+	}
+	if err := json.Unmarshal(b, &obj); err != nil {
+		return err
+	}
+	d.Percentage = obj.Percentage
+	d.Value = obj.Value
+	return nil
+}
+
 type InvoiceItem struct {
-	Code        string       `json:"code"`
-	Description string       `json:"description"`
-	Quantity    float64      `json:"quantity"`
-	Discount    float64      `json:"discount"`
-	Price       float64      `json:"price"`
-	Taxed       bool         `json:"taxed"`
-	Taxes       []TaxRef     `json:"taxes"`
-	Total       float64      `json:"total"`
+	Code        string   `json:"code"`
+	Description string   `json:"description"`
+	Quantity    float64  `json:"quantity"`
+	Discount    Discount `json:"discount"`
+	Price       float64  `json:"price"`
+	Taxed       bool     `json:"taxed"`
+	Taxes       []TaxRef `json:"taxes"`
+	Total       float64  `json:"total"`
 }
 
 type TaxRef struct {
@@ -95,7 +123,7 @@ type Stamp struct {
 // Purchase (compra / Egreso)
 
 type Purchase struct {
-	ID           int             `json:"id"`
+	ID           string          `json:"id"`
 	Document     DocumentRef     `json:"document"`
 	Prefix       string          `json:"prefix"`
 	Number       int             `json:"number"`

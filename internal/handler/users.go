@@ -6,6 +6,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/intexa/arca-api/internal/domain"
 	"github.com/intexa/arca-api/internal/repository"
+	"golang.org/x/crypto/bcrypt"
 )
 
 type UsersHandler struct {
@@ -32,8 +33,15 @@ func (h *UsersHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if u.Password == "" {
-		u.Password = "changeme"
+		jsonError(w, "password is required", http.StatusBadRequest)
+		return
 	}
+	hashed, err := bcrypt.GenerateFromPassword([]byte(u.Password), bcrypt.DefaultCost)
+	if err != nil {
+		jsonError(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	u.Password = string(hashed)
 	if err := h.store.CreateUser(&u); err != nil {
 		jsonError(w, "internal server error", http.StatusInternalServerError)
 		return

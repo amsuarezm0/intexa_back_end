@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/intexa/arca-api/internal/domain"
+	"github.com/intexa/arca-api/internal/middleware"
 	"github.com/intexa/arca-api/internal/repository"
 )
 
@@ -33,25 +34,32 @@ func (h *DashboardHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 	prevY, prevM, _ := now.AddDate(0, -1, 0).Date()
 	prevInc, prevExp := monthlyTotals(all, prevY, prevM)
 
-	balChange := signedPct(monthInc-monthExp, prevInc-prevExp) + " vs mes ant."
-	incChange := signedPct(monthInc, prevInc) + " vs mes ant."
-	expChange := signedPct(monthExp, prevExp) + " vs mes ant."
+	balChange := signedPct(monthInc-monthExp, prevInc-prevExp)
+	incChange := signedPct(monthInc, prevInc)
+	expChange := signedPct(monthExp, prevExp)
+
+	trendLabel := func(change string) string {
+		if change == "" {
+			return "Sin datos mes anterior"
+		}
+		return "vs mes ant."
+	}
 
 	stats := []domain.StatCard{
 		{
-			Title: "SALDO ACTUAL", Value: formatCOP(balance),
+			Title: "SALDO ACTUAL", Value: balance,
 			Change: balChange, IsPositive: monthInc >= monthExp,
-			TrendText: "vs mes ant.", Icon: "Building2",
+			TrendText: trendLabel(balChange), Icon: "Building2",
 		},
 		{
-			Title: "INGRESOS MES", Value: formatCOP(monthInc),
+			Title: "INGRESOS MES", Value: monthInc,
 			Change: incChange, IsPositive: monthInc >= prevInc,
-			Icon: "ArrowDownCircle",
+			TrendText: trendLabel(incChange), Icon: "ArrowDownCircle",
 		},
 		{
-			Title: "EGRESOS MES", Value: formatCOP(monthExp),
+			Title: "EGRESOS MES", Value: monthExp,
 			Change: expChange, IsPositive: monthExp <= prevExp,
-			Icon: "ArrowUpCircle",
+			TrendText: trendLabel(expChange), Icon: "ArrowUpCircle",
 		},
 	}
 
@@ -89,7 +97,7 @@ func (h *DashboardHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 		if t.IsProjection {
 			continue
 		}
-		ty, tm, td := t.CreatedAt.Date()
+		ty, tm, td := txDate(t)
 		if ty != y || tm != m {
 			continue
 		}
@@ -121,11 +129,56 @@ func (h *DashboardHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonOK(w, domain.DashboardSummary{
-		Stats:      stats,
-		NetFlow:    monthInc - monthExp,
-		ChartData:  chartData,
-		ExpensePie: pie,
-		Alerts:     alerts,
-		WeeklyData: weeklyData,
+		Stats:        stats,
+		NetFlow:      monthInc - monthExp,
+		MonthIncome:  monthInc,
+		MonthExpense: monthExp,
+		ChartData:    chartData,
+		ExpensePie:   pie,
+		Alerts:       alerts,
+		WeeklyData:   weeklyData,
 	})
+}
+
+// GET /api/v1/dashboard/bank-balance
+func (h *DashboardHandler) GetBankBalance(w http.ResponseWriter, r *http.Request) {
+	b, err := h.store.GetBankBalance()
+	if err != nil {
+		jsonError(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	if b == nil {
+		jsonOK(w, map[string]any{"amount": 0, "updatedAt": nil, "updatedBy": ""})
+		return
+	}
+	jsonOK(w, b)
+}
+
+// PUT /api/v1/dashboard/bank-balance
+func (h *DashboardHandler) UpdateBankBalance(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Amount float64 `json:"amount"`
+	}
+	if err := decode(r, &req); err != nil {
+		jsonError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	updatedBy := "Sistema"
+	if claims, ok := middleware.ClaimsFromContext(r.Context()); ok {
+		if email, _ := claims["sub"].(string); email != "" {
+			updatedBy = email
+		}
+	}
+
+	b := domain.BankBalance{
+		Amount:    req.Amount,
+		UpdatedAt: time.Now(),
+		UpdatedBy: updatedBy,
+	}
+	if err := h.store.SetBankBalance(b); err != nil {
+		jsonError(w, "failed to save bank balance", http.StatusInternalServerError)
+		return
+	}
+	jsonOK(w, b)
 }

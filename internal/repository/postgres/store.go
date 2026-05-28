@@ -70,21 +70,23 @@ func (s *Store) CreateTransaction(t *domain.Transaction) error {
 	).Scan(&t.CreatedAt, &t.UpdatedAt)
 }
 
-func (s *Store) ImportTransaction(t *domain.Transaction) error {
+// ImportTransaction upserts a Siigo transaction by external_id.
+// Returns true if the row was inserted (new), false if it already existed and was updated.
+func (s *Store) ImportTransaction(t *domain.Transaction) (bool, error) {
 	t.ID = uuid.NewString()
-	date := t.CreatedAt
-	if date.IsZero() {
-		date = time.Now()
-	}
-	return s.pool.QueryRow(bg(), `
+	var inserted bool
+	err := s.pool.QueryRow(bg(), `
 		INSERT INTO transactions
-		  (id, date, description, category, type, amount, status, reference, source, external_id, is_projection, created_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,NULLIF($8,''),$9,NULLIF($10,''),$11,$12)
-		RETURNING created_at, updated_at`,
-		t.ID, date.Format("2006-01-02"), t.Description, t.Category, string(t.Type),
+		  (id, date, description, category, type, amount, status, reference, source, external_id, is_projection)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,NULLIF($8,''),$9,NULLIF($10,''),$11)
+		ON CONFLICT (external_id) DO UPDATE
+		  SET date=$2, description=$3, amount=$6, status=$7, updated_at=now()
+		RETURNING (xmax = 0) AS inserted, created_at, updated_at`,
+		t.ID, parseDate(t.Date), t.Description, t.Category, string(t.Type),
 		t.Amount, string(t.Status), t.Reference, string(t.Source),
-		t.ExternalID, t.IsProjection, date,
-	).Scan(&t.CreatedAt, &t.UpdatedAt)
+		t.ExternalID, t.IsProjection,
+	).Scan(&inserted, &t.CreatedAt, &t.UpdatedAt)
+	return inserted, err
 }
 
 func (s *Store) UpdateTransaction(t *domain.Transaction) (bool, error) {
@@ -103,13 +105,6 @@ func (s *Store) DeleteTransaction(id string) (bool, error) {
 	return tag.RowsAffected() > 0, err
 }
 
-func (s *Store) ExternalIDExists(externalID string) (bool, error) {
-	var exists bool
-	err := s.pool.QueryRow(bg(),
-		`SELECT EXISTS(SELECT 1 FROM transactions WHERE external_id=$1)`, externalID,
-	).Scan(&exists)
-	return exists, err
-}
 
 // ── Users ─────────────────────────────────────────────────────────────────────
 
@@ -146,7 +141,7 @@ func (s *Store) GetAllUsers() ([]*domain.User, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var users []*domain.User
+	users := make([]*domain.User, 0)
 	for rows.Next() {
 		u, err := scanUser(rows)
 		if err != nil {
@@ -287,7 +282,7 @@ func (s *Store) GetCategories() ([]domain.Category, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var cats []domain.Category
+	cats := make([]domain.Category, 0)
 	for rows.Next() {
 		var c domain.Category
 		if err := rows.Scan(&c.ID, &c.Name); err != nil {
@@ -300,9 +295,10 @@ func (s *Store) GetCategories() ([]domain.Category, error) {
 
 // ── Settings ──────────────────────────────────────────────────────────────────
 
-func (s *Store) GetSettings() (domain.Settings, error) {
-	var st domain.Settings
-	rows, err := s.pool.Query(bg(), `SELECT key, value FROM settings`)
+func (s *Store) GetSettings(userID string) (domain.Settings, error) {
+	st := domain.Settings{BaseCurrency: "COP", AutoExchangeRate: true}
+	rows, err := s.pool.Query(bg(), `
+		SELECT key, value FROM settings WHERE user_id=$1`, userID)
 	if err != nil {
 		return st, err
 	}
@@ -325,13 +321,13 @@ func (s *Store) GetSettings() (domain.Settings, error) {
 	return st, rows.Err()
 }
 
-func (s *Store) UpdateSettings(st domain.Settings) error {
+func (s *Store) UpdateSettings(userID string, st domain.Settings) error {
 	_, err := s.pool.Exec(bg(), `
-		INSERT INTO settings (key, value) VALUES
-		  ('baseCurrency',     to_jsonb($1::text)),
-		  ('autoExchangeRate', to_jsonb($2::bool))
-		ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()`,
-		st.BaseCurrency, st.AutoExchangeRate)
+		INSERT INTO settings (user_id, key, value) VALUES
+		  ($1, 'baseCurrency',     to_jsonb($2::text)),
+		  ($1, 'autoExchangeRate', to_jsonb($3::bool))
+		ON CONFLICT (user_id, key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()`,
+		userID, st.BaseCurrency, st.AutoExchangeRate)
 	return err
 }
 
@@ -348,7 +344,7 @@ func (s *Store) GetActivityLogs() ([]domain.ActivityLog, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var logs []domain.ActivityLog
+	logs := make([]domain.ActivityLog, 0)
 	for rows.Next() {
 		var l domain.ActivityLog
 		if err := rows.Scan(&l.ID, &l.UserName, &l.Initial, &l.Action,
@@ -414,9 +410,9 @@ func (s *Store) GetSiigoConfig() (*domain.SiigoConfig, error) {
 	var tokenExp *time.Time
 	var lastSync *time.Time
 	err := s.pool.QueryRow(bg(), `
-		SELECT user_name, partner_id, token_expires_at, last_sync_at
+		SELECT user_name, COALESCE(access_key_enc,''), partner_id, token_expires_at, last_sync_at
 		FROM   siigo_configs ORDER BY created_at DESC LIMIT 1`,
-	).Scan(&cfg.UserName, &cfg.PartnerID, &tokenExp, &lastSync)
+	).Scan(&cfg.UserName, &cfg.AccessKey, &cfg.PartnerID, &tokenExp, &lastSync)
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	}
@@ -434,11 +430,21 @@ func (s *Store) GetSiigoConfig() (*domain.SiigoConfig, error) {
 }
 
 func (s *Store) SetSiigoConfig(cfg domain.SiigoConfig) error {
-	_, err := s.pool.Exec(bg(), `
+	tag, err := s.pool.Exec(bg(), `
+		UPDATE siigo_configs
+		SET user_name=$1, access_key_enc=$2, partner_id=COALESCE($3,''), token_expires_at=$4, updated_at=now()
+		WHERE id = (SELECT id FROM siigo_configs ORDER BY created_at DESC LIMIT 1)`,
+		cfg.UserName, cfg.AccessKey, cfg.PartnerID, cfg.TokenExp)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() > 0 {
+		return nil
+	}
+	_, err = s.pool.Exec(bg(), `
 		INSERT INTO siigo_configs (user_name, access_key_enc, partner_id, token_expires_at)
-		VALUES ($1,'',COALESCE($2,''),$3)
-		ON CONFLICT DO NOTHING`,
-		cfg.UserName, cfg.PartnerID, cfg.TokenExp)
+		VALUES ($1, $2, COALESCE($3,''), $4)`,
+		cfg.UserName, cfg.AccessKey, cfg.PartnerID, cfg.TokenExp)
 	return err
 }
 
@@ -446,6 +452,29 @@ func (s *Store) UpdateSiigoLastSync(t time.Time) error {
 	_, err := s.pool.Exec(bg(), `
 		UPDATE siigo_configs SET last_sync_at=$1, updated_at=now()
 		WHERE  id = (SELECT id FROM siigo_configs ORDER BY created_at DESC LIMIT 1)`, t)
+	return err
+}
+
+// ── Bank balance ──────────────────────────────────────────────────────────────
+
+func (s *Store) GetBankBalance() (*domain.BankBalance, error) {
+	var b domain.BankBalance
+	err := s.pool.QueryRow(bg(), `
+		SELECT amount, updated_by, updated_at FROM bank_balance ORDER BY id LIMIT 1`,
+	).Scan(&b.Amount, &b.UpdatedBy, &b.UpdatedAt)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &b, nil
+}
+
+func (s *Store) SetBankBalance(b domain.BankBalance) error {
+	_, err := s.pool.Exec(bg(), `
+		UPDATE bank_balance SET amount=$1, updated_by=$2, updated_at=now()`,
+		b.Amount, b.UpdatedBy)
 	return err
 }
 
@@ -472,7 +501,7 @@ func scanTransaction(row scanner) (*domain.Transaction, error) {
 }
 
 func scanTransactions(rows pgx.Rows) ([]*domain.Transaction, error) {
-	var list []*domain.Transaction
+	list := make([]*domain.Transaction, 0)
 	for rows.Next() {
 		t, err := scanTransaction(rows)
 		if err != nil {

@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/intexa/arca-api/internal/domain"
+	"github.com/intexa/arca-api/internal/middleware"
 	"github.com/intexa/arca-api/internal/repository"
 )
 
@@ -15,8 +16,17 @@ func NewSettingsHandler(store repository.Store) *SettingsHandler {
 	return &SettingsHandler{store: store}
 }
 
+func userIDFromRequest(r *http.Request) string {
+	if claims, ok := middleware.ClaimsFromContext(r.Context()); ok {
+		if id, _ := claims["sub"].(string); id != "" {
+			return id
+		}
+	}
+	return ""
+}
+
 func (h *SettingsHandler) Get(w http.ResponseWriter, r *http.Request) {
-	s, err := h.store.GetSettings()
+	s, err := h.store.GetSettings(userIDFromRequest(r))
 	if err != nil {
 		jsonError(w, "internal server error", http.StatusInternalServerError)
 		return
@@ -30,7 +40,7 @@ func (h *SettingsHandler) Update(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-	if err := h.store.UpdateSettings(s); err != nil {
+	if err := h.store.UpdateSettings(userIDFromRequest(r), s); err != nil {
 		jsonError(w, "internal server error", http.StatusInternalServerError)
 		return
 	}

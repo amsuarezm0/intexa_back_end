@@ -11,8 +11,8 @@ import (
 )
 
 const (
-	BaseURL   = "https://services.siigo.com"
-	AuthPath  = "/alliances/api/auth/siigo-api/tokens"
+	BaseURL      = "https://api.siigo.com"
+	AuthPath     = "/auth"
 	InvoicePath  = "/v1/invoices"
 	PurchasePath = "/v1/purchases"
 	CustomerPath = "/v1/customers"

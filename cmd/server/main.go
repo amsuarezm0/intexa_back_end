@@ -55,6 +55,16 @@ func main() {
 	settings := handler.NewSettingsHandler(store)
 	siigoH := handler.NewSiigoHandler(store)
 	domains := handler.NewDomainsHandler(store)
+	exchangeRates := handler.NewExchangeRateHandler()
+
+	// ── Siigo auto-connect ────────────────────────────────────────────────────
+	if siigoUser := os.Getenv("SIIGO_USERNAME"); siigoUser != "" {
+		if err := siigoH.AutoConnect(siigoUser, os.Getenv("SIIGO_ACCESS_KEY"), os.Getenv("SIIGO_PARTNER_ID")); err != nil {
+			log.Printf("siigo auto-connect failed: %v", err)
+		} else {
+			log.Println("siigo: connected")
+		}
+	}
 
 	// ── Router ────────────────────────────────────────────────────────────────
 	r := chi.NewRouter()
@@ -91,6 +101,8 @@ func main() {
 
 			// Dashboard
 			r.Get("/dashboard", dashboard.GetSummary)
+			r.Get("/dashboard/bank-balance", dashboard.GetBankBalance)
+			r.Put("/dashboard/bank-balance", dashboard.UpdateBankBalance)
 
 			// Transactions
 			r.Get("/transactions", transactions.List)
@@ -121,6 +133,7 @@ func main() {
 			// Settings
 			r.Get("/settings", settings.Get)
 			r.Put("/settings", settings.Update)
+			r.Get("/exchange-rates", exchangeRates.GetRates)
 			r.Get("/categories", settings.GetCategories)
 			r.Get("/activity-logs", settings.GetActivityLogs)
 

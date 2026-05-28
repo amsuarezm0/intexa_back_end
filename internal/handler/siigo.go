@@ -21,6 +21,25 @@ func NewSiigoHandler(store repository.Store) *SiigoHandler {
 	return &SiigoHandler{store: store}
 }
 
+// AutoConnect is called on startup with credentials from env vars.
+func (h *SiigoHandler) AutoConnect(userName, accessKey, partnerID string) error {
+	client := siigopkg.NewClient(userName, accessKey, partnerID)
+	if err := client.Connect(); err != nil {
+		return err
+	}
+	h.mu.Lock()
+	h.client = client
+	h.mu.Unlock()
+	cfg := domain.SiigoConfig{
+		UserName:  userName,
+		AccessKey: accessKey,
+		PartnerID: partnerID,
+		Connected: true,
+		TokenExp:  client.TokenExpiry(),
+	}
+	return h.store.SetSiigoConfig(cfg)
+}
+
 // POST /api/v1/siigo/connect
 func (h *SiigoHandler) Connect(w http.ResponseWriter, r *http.Request) {
 	var req domain.SiigoConnectRequest
@@ -45,6 +64,7 @@ func (h *SiigoHandler) Connect(w http.ResponseWriter, r *http.Request) {
 
 	cfg := domain.SiigoConfig{
 		UserName:  req.UserName,
+		AccessKey: req.AccessKey,
 		PartnerID: req.PartnerID,
 		Connected: true,
 		TokenExp:  client.TokenExpiry(),
@@ -81,8 +101,20 @@ func (h *SiigoHandler) Sync(w http.ResponseWriter, r *http.Request) {
 	h.mu.Unlock()
 
 	if client == nil || !client.IsConnected() {
-		jsonError(w, "not connected to Siigo — call /siigo/connect first", http.StatusConflict)
-		return
+		cfg, err := h.store.GetSiigoConfig()
+		if err != nil || cfg == nil || cfg.AccessKey == "" {
+			jsonError(w, "not connected to Siigo — call /siigo/connect first", http.StatusConflict)
+			return
+		}
+		c := siigopkg.NewClient(cfg.UserName, cfg.AccessKey, cfg.PartnerID)
+		if err := c.Connect(); err != nil {
+			jsonError(w, fmt.Sprintf("siigo re-authentication failed: %v", err), http.StatusBadGateway)
+			return
+		}
+		h.mu.Lock()
+		h.client = c
+		client = c
+		h.mu.Unlock()
 	}
 
 	var req domain.SiigoSyncRequest
@@ -105,16 +137,6 @@ func (h *SiigoHandler) Sync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, inv := range invoiceResp.Results {
-		extID := fmt.Sprintf("siigo-inv-%d", inv.ID)
-		exists, err := h.store.ExternalIDExists(extID)
-		if err != nil {
-			jsonError(w, "internal server error", http.StatusInternalServerError)
-			return
-		}
-		if exists {
-			result.Skipped++
-			continue
-		}
 		desc := fmt.Sprintf("Factura %s-%d", inv.Prefix, inv.Number)
 		if inv.Customer.CommercialName != "" {
 			desc += " — " + inv.Customer.CommercialName
@@ -126,14 +148,18 @@ func (h *SiigoHandler) Sync(w http.ResponseWriter, r *http.Request) {
 			Category: "Operacional - Ventas", Type: domain.TypeIngreso,
 			Amount: inv.Total, Status: invoiceStatus(inv.Balance),
 			Reference: fmt.Sprintf("%s-%d", inv.Prefix, inv.Number),
-			Source: domain.SourceSIIGO, ExternalID: extID,
-			CreatedAt: parseSiigoDate(inv.Date),
+			Source: domain.SourceSIIGO, ExternalID: fmt.Sprintf("siigo-inv-%s", inv.ID),
 		}
-		if err := h.store.ImportTransaction(t); err != nil {
+		inserted, err := h.store.ImportTransaction(t)
+		if err != nil {
 			jsonError(w, "failed to save invoice", http.StatusInternalServerError)
 			return
 		}
-		result.InvoicesImported++
+		if inserted {
+			result.InvoicesImported++
+		} else {
+			result.Updated++
+		}
 	}
 
 	purchaseResp, err := client.GetPurchases(req.DateStart, req.DateEnd, 1, 100)
@@ -142,16 +168,6 @@ func (h *SiigoHandler) Sync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, pur := range purchaseResp.Results {
-		extID := fmt.Sprintf("siigo-pur-%d", pur.ID)
-		exists, err := h.store.ExternalIDExists(extID)
-		if err != nil {
-			jsonError(w, "internal server error", http.StatusInternalServerError)
-			return
-		}
-		if exists {
-			result.Skipped++
-			continue
-		}
 		desc := fmt.Sprintf("Factura Proveedor %s-%d", pur.Prefix, pur.Number)
 		if pur.Provider.CommercialName != "" {
 			desc += " — " + pur.Provider.CommercialName
@@ -163,20 +179,24 @@ func (h *SiigoHandler) Sync(w http.ResponseWriter, r *http.Request) {
 			Category: "Gastos Operativos", Type: domain.TypeEgreso,
 			Amount: pur.Total, Status: invoiceStatus(pur.Balance),
 			Reference: fmt.Sprintf("%s-%d", pur.Prefix, pur.Number),
-			Source: domain.SourceSIIGO, ExternalID: extID,
-			CreatedAt: parseSiigoDate(pur.Date),
+			Source: domain.SourceSIIGO, ExternalID: fmt.Sprintf("siigo-pur-%s", pur.ID),
 		}
-		if err := h.store.ImportTransaction(t); err != nil {
+		inserted, err := h.store.ImportTransaction(t)
+		if err != nil {
 			jsonError(w, "failed to save purchase", http.StatusInternalServerError)
 			return
 		}
-		result.PurchasesImported++
+		if inserted {
+			result.PurchasesImported++
+		} else {
+			result.Updated++
+		}
 	}
 
 	h.store.UpdateSiigoLastSync(time.Now()) //nolint
-	h.store.AddActivityLog(domain.ActivityLog{  //nolint
+	h.store.AddActivityLog(domain.ActivityLog{ //nolint
 		UserName: "Sistema", Initial: "SI",
-		Action: fmt.Sprintf("Sync Siigo (+%d FV, +%d FC)", result.InvoicesImported, result.PurchasesImported),
+		Action: fmt.Sprintf("Sync Siigo (+%d FV, +%d FC, ~%d actualizados)", result.InvoicesImported, result.PurchasesImported, result.Updated),
 		Module: "Integración", Color: "bg-green-500",
 	})
 	jsonOK(w, result)
@@ -189,10 +209,3 @@ func invoiceStatus(balance float64) domain.TransactionStatus {
 	return domain.StatusPending
 }
 
-func parseSiigoDate(s string) time.Time {
-	t, err := time.Parse("2006-01-02", s)
-	if err != nil {
-		return time.Now()
-	}
-	return t
-}

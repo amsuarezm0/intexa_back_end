@@ -32,10 +32,11 @@ type Store struct {
 	oauthStates  map[string]oauthState
 	domains      map[string]struct{}
 	categories   []domain.Category
-	settings     domain.Settings
+	settings     map[string]domain.Settings
 	activityLogs []domain.ActivityLog
 	budgets      map[budgetKey]float64
 	siigoConfig  *domain.SiigoConfig
+	bankBalance  *domain.BankBalance
 }
 
 func New() *Store {
@@ -45,7 +46,7 @@ func New() *Store {
 		oauthStates:  make(map[string]oauthState),
 		domains:      make(map[string]struct{}),
 		budgets:      make(map[budgetKey]float64),
-		settings:     domain.Settings{BaseCurrency: "COP", AutoExchangeRate: false},
+		settings:     make(map[string]domain.Settings),
 	}
 	s.seed()
 	return s
@@ -69,7 +70,7 @@ func (s *Store) seed() {
 		Name:      "Admin Local",
 		Email:     "admin@arca.local",
 		Role:      domain.RoleAdmin,
-		Password:  "admin",
+		Password:  "$2a$10$VsT0saCIhLsPczQPXz4kteeTFi/pD2HiW5xHoOB/VymC6S/Yd6Bau", // "admin"
 		Active:    true,
 		CreatedAt: now,
 	}
@@ -201,18 +202,28 @@ func (s *Store) CreateTransaction(t *domain.Transaction) error {
 	return nil
 }
 
-func (s *Store) ImportTransaction(t *domain.Transaction) error {
+func (s *Store) ImportTransaction(t *domain.Transaction) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Upsert by ExternalID
+	for id, existing := range s.transactions {
+		if existing.ExternalID == t.ExternalID {
+			existing.Amount = t.Amount
+			existing.Status = t.Status
+			existing.Description = t.Description
+			existing.Date = t.Date
+			existing.UpdatedAt = time.Now()
+			s.transactions[id] = existing
+			return false, nil
+		}
+	}
 	t.ID = uuid.NewString()
 	now := time.Now()
-	if t.CreatedAt.IsZero() {
-		t.CreatedAt = now
-	}
+	t.CreatedAt = now
 	t.UpdatedAt = now
-	s.mu.Lock()
 	cp := *t
 	s.transactions[t.ID] = &cp
-	s.mu.Unlock()
-	return nil
+	return true, nil
 }
 
 func (s *Store) UpdateTransaction(t *domain.Transaction) (bool, error) {
@@ -242,16 +253,6 @@ func (s *Store) DeleteTransaction(id string) (bool, error) {
 	return true, nil
 }
 
-func (s *Store) ExternalIDExists(externalID string) (bool, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	for _, t := range s.transactions {
-		if t.ExternalID == externalID {
-			return true, nil
-		}
-	}
-	return false, nil
-}
 
 // ── Users ─────────────────────────────────────────────────────────────────────
 
@@ -410,15 +411,18 @@ func (s *Store) GetCategories() ([]domain.Category, error) {
 
 // ── Settings ──────────────────────────────────────────────────────────────────
 
-func (s *Store) GetSettings() (domain.Settings, error) {
+func (s *Store) GetSettings(userID string) (domain.Settings, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.settings, nil
+	if st, ok := s.settings[userID]; ok {
+		return st, nil
+	}
+	return domain.Settings{BaseCurrency: "COP", AutoExchangeRate: true}, nil
 }
 
-func (s *Store) UpdateSettings(st domain.Settings) error {
+func (s *Store) UpdateSettings(userID string, st domain.Settings) error {
 	s.mu.Lock()
-	s.settings = st
+	s.settings[userID] = st
 	s.mu.Unlock()
 	return nil
 }
@@ -502,6 +506,26 @@ func (s *Store) UpdateSiigoLastSync(t time.Time) error {
 	if s.siigoConfig != nil {
 		s.siigoConfig.LastSync = t
 	}
+	s.mu.Unlock()
+	return nil
+}
+
+// ── Bank balance ──────────────────────────────────────────────────────────────
+
+func (s *Store) GetBankBalance() (*domain.BankBalance, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.bankBalance == nil {
+		return nil, nil
+	}
+	cp := *s.bankBalance
+	return &cp, nil
+}
+
+func (s *Store) SetBankBalance(b domain.BankBalance) error {
+	s.mu.Lock()
+	cp := b
+	s.bankBalance = &cp
 	s.mu.Unlock()
 	return nil
 }

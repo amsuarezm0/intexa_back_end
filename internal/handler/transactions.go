@@ -24,6 +24,7 @@ func (h *TransactionsHandler) List(w http.ResponseWriter, r *http.Request) {
 	search := strings.ToLower(q.Get("search"))
 	typeFilter := q.Get("type")
 	statusFilter := q.Get("status")
+	isProjectionParam := q.Get("isProjection") // "true", "false", or "" (no filter)
 	page, _ := strconv.Atoi(q.Get("page"))
 	limit, _ := strconv.Atoi(q.Get("limit"))
 	if page < 1 {
@@ -40,10 +41,13 @@ func (h *TransactionsHandler) List(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sort.Slice(all, func(i, j int) bool {
+		if all[i].Date != all[j].Date {
+			return all[i].Date > all[j].Date
+		}
 		return all[i].CreatedAt.After(all[j].CreatedAt)
 	})
 
-	var filtered []domain.Transaction
+	filtered := make([]domain.Transaction, 0)
 	for _, t := range all {
 		if search != "" && !strings.Contains(strings.ToLower(t.Description), search) &&
 			!strings.Contains(strings.ToLower(t.Category), search) {
@@ -53,6 +57,12 @@ func (h *TransactionsHandler) List(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if statusFilter != "" && string(t.Status) != statusFilter {
+			continue
+		}
+		if isProjectionParam == "true" && !t.IsProjection {
+			continue
+		}
+		if isProjectionParam == "false" && t.IsProjection {
 			continue
 		}
 		filtered = append(filtered, *t)

@@ -16,6 +16,7 @@ import (
 	"github.com/intexa/arca-api/internal/domain"
 	"github.com/intexa/arca-api/internal/middleware"
 	"github.com/intexa/arca-api/internal/repository"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // msTenant controls which Microsoft accounts are accepted.
@@ -68,7 +69,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	if !ok || user.Password != req.Password {
+	if !ok || bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(req.Password)) != nil {
 		jsonError(w, "invalid credentials", http.StatusUnauthorized)
 		return
 	}
