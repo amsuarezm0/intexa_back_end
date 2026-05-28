@@ -429,6 +429,17 @@ func (s *Store) UpdateSiigoLastSync(t time.Time) error {
 	return err
 }
 
+func (s *Store) GetEarliestSiigoDate() (string, error) {
+	var d string
+	err := s.pool.QueryRow(bg(), `
+		SELECT MIN(date) FROM transactions WHERE source = 'Siigo'`,
+	).Scan(&d)
+	if err != nil {
+		return "", err
+	}
+	return d, nil
+}
+
 // ── Bank balance ──────────────────────────────────────────────────────────────
 
 func (s *Store) GetBankBalance() (*domain.BankBalance, error) {

@@ -485,6 +485,21 @@ func (s *Store) UpdateSiigoLastSync(t time.Time) error {
 	return nil
 }
 
+func (s *Store) GetEarliestSiigoDate() (string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	earliest := ""
+	for _, t := range s.transactions {
+		if t.Source != domain.SourceSIIGO {
+			continue
+		}
+		if earliest == "" || t.Date < earliest {
+			earliest = t.Date
+		}
+	}
+	return earliest, nil
+}
+
 // ── Bank balance ──────────────────────────────────────────────────────────────
 
 func (s *Store) GetBankBalance() (*domain.BankBalance, error) {

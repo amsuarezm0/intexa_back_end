@@ -50,6 +50,7 @@ type Store interface {
 	GetSiigoConfig() (*domain.SiigoConfig, error)
 	SetSiigoConfig(cfg domain.SiigoConfig) error
 	UpdateSiigoLastSync(t time.Time) error
+	GetEarliestSiigoDate() (string, error)
 
 	// ── Bank balance ──────────────────────────────────────────────────────────
 	GetBankBalance() (*domain.BankBalance, error)

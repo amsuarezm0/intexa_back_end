@@ -57,12 +57,14 @@ func main() {
 	domains := handler.NewDomainsHandler(store)
 	exchangeRates := handler.NewExchangeRateHandler()
 
-	// ── Siigo auto-connect ────────────────────────────────────────────────────
+	// ── Siigo auto-connect + scheduler ───────────────────────────────────────
 	if siigoUser := os.Getenv("SIIGO_USERNAME"); siigoUser != "" {
 		if err := siigoH.AutoConnect(siigoUser, os.Getenv("SIIGO_ACCESS_KEY"), os.Getenv("SIIGO_PARTNER_ID")); err != nil {
 			log.Printf("siigo auto-connect failed: %v", err)
 		} else {
 			log.Println("siigo: connected")
+			siigoH.StartScheduler()
+			log.Println("siigo: daily scheduler started (06:00, reconcile on 1st)")
 		}
 	}
 

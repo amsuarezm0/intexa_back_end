@@ -200,15 +200,27 @@ type SiigoConnectRequest struct {
 	PartnerID string `json:"partnerId"`
 }
 
+type SiigoSyncMode string
+
+const (
+	SyncModeIncremental SiigoSyncMode = "incremental" // rolling last 90 days (default)
+	SyncModeBootstrap   SiigoSyncMode = "bootstrap"   // full history from DateStart
+	SyncModeReconcile   SiigoSyncMode = "reconcile"   // re-scan from earliest known record
+)
+
 type SiigoSyncRequest struct {
-	DateStart string `json:"dateStart"` // YYYY-MM-DD
-	DateEnd   string `json:"dateEnd"`
+	Mode      SiigoSyncMode `json:"mode"`
+	DateStart string        `json:"dateStart"` // YYYY-MM-DD — required for bootstrap
+	DateEnd   string        `json:"dateEnd"`   // YYYY-MM-DD — defaults to today
 }
 
 type SiigoSyncResult struct {
-	InvoicesImported  int `json:"invoicesImported"`
-	PurchasesImported int `json:"purchasesImported"`
-	Updated           int `json:"updated"`
+	Mode              SiigoSyncMode `json:"mode"`
+	DateStart         string        `json:"dateStart"`
+	DateEnd           string        `json:"dateEnd"`
+	InvoicesImported  int           `json:"invoicesImported"`
+	PurchasesImported int           `json:"purchasesImported"`
+	Updated           int           `json:"updated"`
 }
 
 type ActivityLog struct {
