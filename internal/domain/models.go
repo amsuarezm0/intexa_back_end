@@ -32,6 +32,7 @@ type Transaction struct {
 	Amount       float64           `json:"amount"`
 	Status       TransactionStatus `json:"status"`
 	Reference    string            `json:"reference,omitempty"`
+	Detail       string            `json:"detail,omitempty"`
 	Source       TransactionSource `json:"source"`
 	ExternalID   string            `json:"externalId,omitempty"` // Siigo document ID
 	IsProjection bool              `json:"isProjection"`

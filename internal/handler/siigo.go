@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,11 +14,11 @@ import (
 )
 
 const (
-	siigoPageSize       = 100
-	incrementalDays     = 90   // rolling window for daily sync
-	schedulerHour       = 6    // daily sync fires at 06:00 local time
-	reconcileDay        = 1    // reconcile fires on the 1st of each month
-	bootstrapFallback   = 365  // days back if no Siigo records exist in reconcile
+	siigoPageSize     = 100
+	incrementalDays   = 3    // overlap window for incremental (days before lastSync)
+	schedulerHour     = 6    // daily sync fires at 06:00 local time
+	reconcileDay      = 1    // reconcile fires on the 1st of each month
+	bootstrapFallback = 730  // days back when no records exist (2 years)
 )
 
 type SiigoHandler struct {
@@ -218,22 +219,38 @@ func (h *SiigoHandler) ensureClient() (*siigopkg.Client, error) {
 func (h *SiigoHandler) resolveDates(mode domain.SiigoSyncMode, requestedStart string) (string, string, error) {
 	today := time.Now().Format("2006-01-02")
 	switch mode {
+
 	case domain.SyncModeBootstrap:
 		return requestedStart, today, nil
 
 	case domain.SyncModeReconcile:
+		// Always re-scan the full window: from the earliest transaction we have
+		// in the DB, or bootstrapFallback days back if the tables are empty.
 		earliest, err := h.store.GetEarliestSiigoDate()
 		if err != nil {
 			return "", "", err
 		}
 		if earliest == "" {
-			// No Siigo records yet — fall back to bootstrapFallback days
 			earliest = time.Now().AddDate(0, 0, -bootstrapFallback).Format("2006-01-02")
 		}
 		return earliest, today, nil
 
 	default: // incremental
-		return time.Now().AddDate(0, 0, -incrementalDays).Format("2006-01-02"), today, nil
+		// Use lastSync as the anchor so we only fetch genuinely new data.
+		// Fall back to bootstrapFallback days when there has never been a sync
+		// (e.g. fresh install or after a table clear).
+		cfg, err := h.store.GetSiigoConfig()
+		if err != nil {
+			return "", "", err
+		}
+		var start string
+		if cfg != nil && !cfg.LastSync.IsZero() {
+			// Go back incrementalDays before lastSync as a safety overlap.
+			start = cfg.LastSync.AddDate(0, 0, -incrementalDays).Format("2006-01-02")
+		} else {
+			start = time.Now().AddDate(0, 0, -bootstrapFallback).Format("2006-01-02")
+		}
+		return start, today, nil
 	}
 }
 
@@ -265,17 +282,20 @@ func (h *SiigoHandler) syncInvoices(client *siigopkg.Client, dateStart, dateEnd 
 			return fmt.Errorf("fetching invoices page %d: %w", page, err)
 		}
 		for _, inv := range resp.Results {
-			desc := fmt.Sprintf("Factura %s-%d", inv.Prefix, inv.Number)
-			if inv.Customer.CommercialName != "" {
-				desc += " — " + inv.Customer.CommercialName
-			} else if inv.Customer.Name != "" {
-				desc += " — " + inv.Customer.Name
+			desc := inv.Name
+			if desc == "" {
+				desc = siigoRef(inv.Prefix, inv.Number)
+			}
+			itemDescs := make([]string, 0, len(inv.Items))
+			for _, it := range inv.Items {
+				itemDescs = append(itemDescs, strings.TrimSpace(it.Description))
 			}
 			t := &domain.Transaction{
 				Date: inv.Date, Description: desc,
-				Category: "Operacional - Ventas", Type: domain.TypeIngreso,
+				Category: categorizeInvoice(itemDescs, ""), Type: domain.TypeIngreso,
 				Amount: inv.Total, Status: invoiceStatus(inv.Balance),
-				Reference:  fmt.Sprintf("%s-%d", inv.Prefix, inv.Number),
+				Reference:  desc,
+				Detail:     strings.Join(itemDescs, " | "),
 				Source:     domain.SourceSIIGO,
 				ExternalID: fmt.Sprintf("siigo-inv-%s", inv.ID),
 			}
@@ -303,17 +323,20 @@ func (h *SiigoHandler) syncPurchases(client *siigopkg.Client, dateStart, dateEnd
 			return fmt.Errorf("fetching purchases page %d: %w", page, err)
 		}
 		for _, pur := range resp.Results {
-			desc := fmt.Sprintf("Factura Proveedor %s-%d", pur.Prefix, pur.Number)
-			if pur.Provider.CommercialName != "" {
-				desc += " — " + pur.Provider.CommercialName
-			} else if pur.Provider.Name != "" {
-				desc += " — " + pur.Provider.Name
+			desc := pur.Name
+			if desc == "" {
+				desc = siigoRef(pur.Prefix, pur.Number)
+			}
+			itemDescs := make([]string, 0, len(pur.Items))
+			for _, it := range pur.Items {
+				itemDescs = append(itemDescs, strings.TrimSpace(it.Description))
 			}
 			t := &domain.Transaction{
 				Date: pur.Date, Description: desc,
-				Category: "Gastos Operativos", Type: domain.TypeEgreso,
+				Category: categorizePurchase(itemDescs, ""), Type: domain.TypeEgreso,
 				Amount: pur.Total, Status: invoiceStatus(pur.Balance),
-				Reference:  fmt.Sprintf("%s-%d", pur.Prefix, pur.Number),
+				Reference:  desc,
+				Detail:     strings.Join(itemDescs, " | "),
 				Source:     domain.SourceSIIGO,
 				ExternalID: fmt.Sprintf("siigo-pur-%s", pur.ID),
 			}
@@ -334,9 +357,72 @@ func (h *SiigoHandler) syncPurchases(client *siigopkg.Client, dateStart, dateEnd
 	return nil
 }
 
+// siigoRef builds a human-readable document reference from prefix and number.
+// When prefix is empty (Siigo omits it on some document types) it falls back
+// to just the number so we never produce a leading "-" in the UI.
+func siigoRef(prefix string, number int) string {
+	if prefix == "" {
+		return fmt.Sprintf("%d", number)
+	}
+	return fmt.Sprintf("%s-%d", prefix, number)
+}
+
 func invoiceStatus(balance float64) domain.TransactionStatus {
 	if balance == 0 {
 		return domain.StatusCompleted
 	}
 	return domain.StatusPending
+}
+
+// categoryKeywords maps lowercase keywords found in item descriptions or provider/customer
+// names to a canonical category name.
+var purchaseCategoryKeywords = []struct {
+	keywords []string
+	category string
+}{
+	{[]string{"nomina", "nómina", "salario", "sueldo", "empleado", "personal", "contrato laboral", "honorario", "prestacion", "prestación"}, "Personal"},
+	{[]string{"software", "tecnologia", "tecnología", "hosting", "servidor", "licencia", "cloud", "aws", "google", "microsoft", "internet", "informatica", "informática", "sistema"}, "Tecnología"},
+	{[]string{"publicidad", "marketing", "pauta", "redes sociales", "anuncio", "promocion", "promoción", "agencia", "diseño", "branding"}, "Marketing"},
+	{[]string{"arriendo", "arrendamiento", "alquiler", "oficina", "bodega", "local", "inmueble"}, "Arriendo"},
+	{[]string{"transporte", "flete", "logistica", "logística", "mensajeria", "mensajería", "envio", "envío", "courier"}, "Logística"},
+	{[]string{"servicio publico", "servicio público", "agua", "luz", "energia", "energía", "gas", "telefono", "teléfono", "celular"}, "Servicios Públicos"},
+	{[]string{"legal", "juridico", "jurídico", "abogado", "notaria", "notaría", "contrato", "escritura"}, "Legal"},
+	{[]string{"contador", "contabilidad", "auditoria", "auditoría", "revisor fiscal", "impuesto", "declaracion", "declaración", "dian"}, "Contabilidad e Impuestos"},
+	{[]string{"seguro", "poliza", "póliza", "arl", "eps", "pension", "pensión"}, "Seguros y Beneficios"},
+	{[]string{"mantenimiento", "reparacion", "reparación", "aseo", "limpieza", "vigilancia", "seguridad"}, "Mantenimiento"},
+	{[]string{"financiero", "bancario", "banco", "credito", "crédito", "prestamo", "préstamo", "interes", "interés", "comision", "comisión bancaria"}, "Finanzas"},
+}
+
+var invoiceCategoryKeywords = []struct {
+	keywords []string
+	category string
+}{
+	{[]string{"consultoria", "consultoría", "asesor", "servicio profesional"}, "Consultoría"},
+	{[]string{"software", "licencia", "sistema", "desarrollo", "tecnologia", "tecnología"}, "Tecnología"},
+	{[]string{"producto", "mercancia", "mercancía", "venta de producto"}, "Ventas - Producto"},
+	{[]string{"mantenimiento", "soporte"}, "Mantenimiento"},
+}
+
+func categorizePurchase(itemDescriptions []string, providerName string) string {
+	combined := strings.ToLower(strings.Join(append(itemDescriptions, providerName), " "))
+	for _, rule := range purchaseCategoryKeywords {
+		for _, kw := range rule.keywords {
+			if strings.Contains(combined, kw) {
+				return rule.category
+			}
+		}
+	}
+	return "Gastos Operativos"
+}
+
+func categorizeInvoice(itemDescriptions []string, customerName string) string {
+	combined := strings.ToLower(strings.Join(append(itemDescriptions, customerName), " "))
+	for _, rule := range invoiceCategoryKeywords {
+		for _, kw := range rule.keywords {
+			if strings.Contains(combined, kw) {
+				return rule.category
+			}
+		}
+	}
+	return "Ventas"
 }

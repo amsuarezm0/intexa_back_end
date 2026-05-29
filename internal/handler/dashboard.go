@@ -28,8 +28,8 @@ func (h *DashboardHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	y, m, _ := now.Date()
 
-	balance := currentBalance(all)
 	monthInc, monthExp := monthlyTotals(all, y, m)
+	balance := monthInc - monthExp
 
 	prevY, prevM, _ := now.AddDate(0, -1, 0).Date()
 	prevInc, prevExp := monthlyTotals(all, prevY, prevM)

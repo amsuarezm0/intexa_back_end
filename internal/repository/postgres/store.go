@@ -33,7 +33,7 @@ func bg() context.Context { return context.Background() }
 func (s *Store) GetAllTransactions() ([]*domain.Transaction, error) {
 	rows, err := s.pool.Query(bg(), `
 		SELECT id, date::TEXT, description, category, type, amount, status,
-		       COALESCE(reference,''), source, COALESCE(external_id,''), is_projection,
+		       COALESCE(reference,''), COALESCE(detail,''), source, COALESCE(external_id,''), is_projection,
 		       created_at, updated_at
 		FROM   transactions
 		ORDER  BY created_at DESC`)
@@ -47,7 +47,7 @@ func (s *Store) GetAllTransactions() ([]*domain.Transaction, error) {
 func (s *Store) GetTransactionByID(id string) (*domain.Transaction, bool, error) {
 	row := s.pool.QueryRow(bg(), `
 		SELECT id, date::TEXT, description, category, type, amount, status,
-		       COALESCE(reference,''), source, COALESCE(external_id,''), is_projection,
+		       COALESCE(reference,''), COALESCE(detail,''), source, COALESCE(external_id,''), is_projection,
 		       created_at, updated_at
 		FROM   transactions WHERE id = $1`, id)
 	t, err := scanTransaction(row)
@@ -61,11 +61,11 @@ func (s *Store) CreateTransaction(t *domain.Transaction) error {
 	t.ID = uuid.NewString()
 	return s.pool.QueryRow(bg(), `
 		INSERT INTO transactions
-		  (id, date, description, category, type, amount, status, reference, source, external_id, is_projection)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,NULLIF($8,''),  $9,NULLIF($10,''),$11)
+		  (id, date, description, category, type, amount, status, reference, detail, source, external_id, is_projection)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,NULLIF($8,''),$9,$10,NULLIF($11,''),$12)
 		RETURNING created_at, updated_at`,
 		t.ID, parseDate(t.Date), t.Description, t.Category, string(t.Type),
-		t.Amount, string(t.Status), t.Reference, string(t.Source),
+		t.Amount, string(t.Status), t.Reference, t.Detail, string(t.Source),
 		t.ExternalID, t.IsProjection,
 	).Scan(&t.CreatedAt, &t.UpdatedAt)
 }
@@ -77,13 +77,13 @@ func (s *Store) ImportTransaction(t *domain.Transaction) (bool, error) {
 	var inserted bool
 	err := s.pool.QueryRow(bg(), `
 		INSERT INTO transactions
-		  (id, date, description, category, type, amount, status, reference, source, external_id, is_projection)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,NULLIF($8,''),$9,NULLIF($10,''),$11)
+		  (id, date, description, category, type, amount, status, reference, detail, source, external_id, is_projection)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,NULLIF($8,''),$9,$10,NULLIF($11,''),$12)
 		ON CONFLICT (external_id) DO UPDATE
-		  SET date=$2, description=$3, amount=$6, status=$7, updated_at=now()
+		  SET date=$2, description=$3, category=$4, amount=$6, status=$7, detail=$9, updated_at=now()
 		RETURNING (xmax = 0) AS inserted, created_at, updated_at`,
 		t.ID, parseDate(t.Date), t.Description, t.Category, string(t.Type),
-		t.Amount, string(t.Status), t.Reference, string(t.Source),
+		t.Amount, string(t.Status), t.Reference, t.Detail, string(t.Source),
 		t.ExternalID, t.IsProjection,
 	).Scan(&inserted, &t.CreatedAt, &t.UpdatedAt)
 	return inserted, err
@@ -93,10 +93,10 @@ func (s *Store) UpdateTransaction(t *domain.Transaction) (bool, error) {
 	tag, err := s.pool.Exec(bg(), `
 		UPDATE transactions
 		SET    date=$1, description=$2, category=$3, type=$4, amount=$5,
-		       status=$6, reference=NULLIF($7,''), source=$8, updated_at=now()
-		WHERE  id=$9`,
+		       status=$6, reference=NULLIF($7,''), detail=$8, source=$9, updated_at=now()
+		WHERE  id=$10`,
 		parseDate(t.Date), t.Description, t.Category, string(t.Type),
-		t.Amount, string(t.Status), t.Reference, string(t.Source), t.ID)
+		t.Amount, string(t.Status), t.Reference, t.Detail, string(t.Source), t.ID)
 	return tag.RowsAffected() > 0, err
 }
 
@@ -423,16 +423,26 @@ func (s *Store) SetSiigoConfig(cfg domain.SiigoConfig) error {
 }
 
 func (s *Store) UpdateSiigoLastSync(t time.Time) error {
-	_, err := s.pool.Exec(bg(), `
+	tag, err := s.pool.Exec(bg(), `
 		UPDATE siigo_configs SET last_sync_at=$1, updated_at=now()
 		WHERE  id = (SELECT id FROM siigo_configs ORDER BY created_at DESC LIMIT 1)`, t)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		// Config row was wiped (e.g. table clear) — insert a minimal placeholder so
+		// future incremental syncs have a lastSync anchor.
+		_, err = s.pool.Exec(bg(), `
+			INSERT INTO siigo_configs (last_sync_at) VALUES ($1)
+			ON CONFLICT DO NOTHING`, t)
+	}
 	return err
 }
 
 func (s *Store) GetEarliestSiigoDate() (string, error) {
 	var d string
 	err := s.pool.QueryRow(bg(), `
-		SELECT MIN(date) FROM transactions WHERE source = 'Siigo'`,
+		SELECT TO_CHAR(MIN(date), 'YYYY-MM-DD') FROM transactions WHERE source = 'Siigo'`,
 	).Scan(&d)
 	if err != nil {
 		return "", err
@@ -476,7 +486,7 @@ func scanTransaction(row scanner) (*domain.Transaction, error) {
 	var t domain.Transaction
 	var txType, txStatus, txSource string
 	err := row.Scan(&t.ID, &t.Date, &t.Description, &t.Category,
-		&txType, &t.Amount, &txStatus, &t.Reference,
+		&txType, &t.Amount, &txStatus, &t.Reference, &t.Detail,
 		&txSource, &t.ExternalID, &t.IsProjection,
 		&t.CreatedAt, &t.UpdatedAt)
 	if err != nil {

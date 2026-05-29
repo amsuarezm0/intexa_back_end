@@ -50,11 +50,12 @@ func signedPct(current, previous float64) string {
 	return fmt.Sprintf("%.1f%%", d)
 }
 
-// currentBalance returns the net of all completed, non-projection transactions.
+// currentBalance returns the net of all non-projection transactions (all statuses).
+// Mirrors monthlyTotals which also counts all statuses — consistent accrual-basis view.
 func currentBalance(txs []*domain.Transaction) float64 {
 	var bal float64
 	for _, t := range txs {
-		if t.IsProjection || t.Status != domain.StatusCompleted {
+		if t.IsProjection || t.Status == domain.StatusCancelled {
 			continue
 		}
 		if t.Type == domain.TypeIngreso {

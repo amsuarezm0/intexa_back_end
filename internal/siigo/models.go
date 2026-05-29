@@ -123,18 +123,19 @@ type Stamp struct {
 // Purchase (compra / Egreso)
 
 type Purchase struct {
-	ID           string          `json:"id"`
-	Document     DocumentRef     `json:"document"`
-	Prefix       string          `json:"prefix"`
-	Number       int             `json:"number"`
-	Date         string          `json:"date"`
-	DueDate      string          `json:"due_date"`
+	ID           string           `json:"id"`
+	Document     DocumentRef      `json:"document"`
+	Prefix       string           `json:"prefix"`
+	Number       int              `json:"number"`
+	Name         string           `json:"name"`
+	Date         string           `json:"date"`
+	DueDate      string           `json:"due_date"`
 	Provider     PurchaseProvider `json:"provider"`
-	Total        float64         `json:"total"`
-	Balance      float64         `json:"balance"`
-	Observations string          `json:"observations"`
-	Payments     []PaymentTerm   `json:"payments"`
-	Items        []InvoiceItem   `json:"items"`
+	Total        float64          `json:"total"`
+	Balance      float64          `json:"balance"`
+	Observations string           `json:"observations"`
+	Payments     []PaymentTerm    `json:"payments"`
+	Items        []InvoiceItem    `json:"items"`
 }
 
 type PurchaseProvider struct {
