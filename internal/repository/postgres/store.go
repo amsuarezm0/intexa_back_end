@@ -32,9 +32,9 @@ func bg() context.Context { return context.Background() }
 
 func (s *Store) GetAllTransactions() ([]*domain.Transaction, error) {
 	rows, err := s.pool.Query(bg(), `
-		SELECT id, date::TEXT, description, category, type, amount, status,
-		       COALESCE(reference,''), COALESCE(detail,''), source, COALESCE(external_id,''), is_projection,
-		       created_at, updated_at
+		SELECT id, date::TEXT, description, category, type, amount, COALESCE(balance,0), status,
+		       COALESCE(reference,''), COALESCE(detail,''), source, COALESCE(external_id,''),
+		       COALESCE(parent_id::TEXT,''), is_projection, created_at, updated_at
 		FROM   transactions
 		ORDER  BY created_at DESC`)
 	if err != nil {
@@ -46,9 +46,9 @@ func (s *Store) GetAllTransactions() ([]*domain.Transaction, error) {
 
 func (s *Store) GetTransactionByID(id string) (*domain.Transaction, bool, error) {
 	row := s.pool.QueryRow(bg(), `
-		SELECT id, date::TEXT, description, category, type, amount, status,
-		       COALESCE(reference,''), COALESCE(detail,''), source, COALESCE(external_id,''), is_projection,
-		       created_at, updated_at
+		SELECT id, date::TEXT, description, category, type, amount, COALESCE(balance,0), status,
+		       COALESCE(reference,''), COALESCE(detail,''), source, COALESCE(external_id,''),
+		       COALESCE(parent_id::TEXT,''), is_projection, created_at, updated_at
 		FROM   transactions WHERE id = $1`, id)
 	t, err := scanTransaction(row)
 	if err == pgx.ErrNoRows {
@@ -61,31 +61,38 @@ func (s *Store) CreateTransaction(t *domain.Transaction) error {
 	t.ID = uuid.NewString()
 	return s.pool.QueryRow(bg(), `
 		INSERT INTO transactions
-		  (id, date, description, category, type, amount, status, reference, detail, source, external_id, is_projection)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,NULLIF($8,''),$9,$10,NULLIF($11,''),$12)
+		  (id, date, description, category, type, amount, balance, status, reference, detail, source, external_id, is_projection)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NULLIF($9,''),$10,$11,NULLIF($12,''),$13)
 		RETURNING created_at, updated_at`,
 		t.ID, parseDate(t.Date), t.Description, t.Category, string(t.Type),
-		t.Amount, string(t.Status), t.Reference, t.Detail, string(t.Source),
+		t.Amount, t.Balance, string(t.Status), t.Reference, t.Detail, string(t.Source),
 		t.ExternalID, t.IsProjection,
 	).Scan(&t.CreatedAt, &t.UpdatedAt)
 }
 
 // ImportTransaction upserts a Siigo transaction by external_id.
 // Returns true if the row was inserted (new), false if it already existed and was updated.
+// After the call, t.ID is set to the actual row ID (whether inserted or updated).
 func (s *Store) ImportTransaction(t *domain.Transaction) (bool, error) {
-	t.ID = uuid.NewString()
+	newID := uuid.NewString()
+	var parentID *string
+	if t.ParentID != "" {
+		parentID = &t.ParentID
+	}
+	var actualID string
 	var inserted bool
 	err := s.pool.QueryRow(bg(), `
 		INSERT INTO transactions
-		  (id, date, description, category, type, amount, status, reference, detail, source, external_id, is_projection)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,NULLIF($8,''),$9,$10,NULLIF($11,''),$12)
+		  (id, date, description, category, type, amount, balance, status, reference, detail, source, external_id, parent_id, is_projection)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NULLIF($9,''),$10,$11,NULLIF($12,''),$13,$14)
 		ON CONFLICT (external_id) DO UPDATE
-		  SET date=$2, description=$3, category=$4, amount=$6, status=$7, detail=$9, updated_at=now()
-		RETURNING (xmax = 0) AS inserted, created_at, updated_at`,
-		t.ID, parseDate(t.Date), t.Description, t.Category, string(t.Type),
-		t.Amount, string(t.Status), t.Reference, t.Detail, string(t.Source),
-		t.ExternalID, t.IsProjection,
-	).Scan(&inserted, &t.CreatedAt, &t.UpdatedAt)
+		  SET date=$2, description=$3, category=$4, amount=$6, balance=$7, status=$8, detail=$10, updated_at=now()
+		RETURNING id, (xmax = 0) AS inserted, created_at, updated_at`,
+		newID, parseDate(t.Date), t.Description, t.Category, string(t.Type),
+		t.Amount, t.Balance, string(t.Status), t.Reference, t.Detail, string(t.Source),
+		t.ExternalID, parentID, t.IsProjection,
+	).Scan(&actualID, &inserted, &t.CreatedAt, &t.UpdatedAt)
+	t.ID = actualID
 	return inserted, err
 }
 
@@ -485,8 +492,8 @@ func scanTransaction(row scanner) (*domain.Transaction, error) {
 	var t domain.Transaction
 	var txType, txStatus, txSource string
 	err := row.Scan(&t.ID, &t.Date, &t.Description, &t.Category,
-		&txType, &t.Amount, &txStatus, &t.Reference, &t.Detail,
-		&txSource, &t.ExternalID, &t.IsProjection,
+		&txType, &t.Amount, &t.Balance, &txStatus, &t.Reference, &t.Detail,
+		&txSource, &t.ExternalID, &t.ParentID, &t.IsProjection,
 		&t.CreatedAt, &t.UpdatedAt)
 	if err != nil {
 		return nil, err

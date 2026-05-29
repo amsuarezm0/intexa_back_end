@@ -12,6 +12,7 @@ const (
 	TypeEgreso  TransactionType = "Egreso"
 
 	StatusCompleted TransactionStatus = "Completado"
+	StatusPartial   TransactionStatus = "Parcial"
 	StatusPending   TransactionStatus = "Pendiente"
 	StatusCancelled TransactionStatus = "Cancelado"
 
@@ -30,11 +31,13 @@ type Transaction struct {
 	Category     string            `json:"category"`
 	Type         TransactionType   `json:"type"`
 	Amount       float64           `json:"amount"`
+	Balance      float64           `json:"balance,omitempty"` // remaining unpaid amount (Siigo)
 	Status       TransactionStatus `json:"status"`
 	Reference    string            `json:"reference,omitempty"`
 	Detail       string            `json:"detail,omitempty"`
 	Source       TransactionSource `json:"source"`
-	ExternalID   string            `json:"externalId,omitempty"` // Siigo document ID
+	ExternalID   string            `json:"externalId,omitempty"`
+	ParentID     string            `json:"parentId,omitempty"` // set on payment-term projections
 	IsProjection bool              `json:"isProjection"`
 	CreatedAt    time.Time         `json:"createdAt"`
 	UpdatedAt    time.Time         `json:"updatedAt"`

@@ -293,13 +293,17 @@ func (h *SiigoHandler) syncInvoices(client *siigopkg.Client, dateStart, dateEnd 
 				itemDescs = append(itemDescs, strings.TrimSpace(it.Description))
 			}
 			t := &domain.Transaction{
-				Date: inv.Date, Description: desc,
-				Category: categorizeInvoice(itemDescs, ""), Type: domain.TypeIngreso,
-				Amount: inv.Total, Status: invoiceStatus(inv.Balance),
-				Reference:  desc,
-				Detail:     strings.Join(itemDescs, " | "),
-				Source:     domain.SourceSIIGO,
-				ExternalID: fmt.Sprintf("siigo-inv-%s", inv.ID),
+				Date:        inv.Date,
+				Description: desc,
+				Category:    categorizeInvoice(itemDescs, ""),
+				Type:        domain.TypeIngreso,
+				Amount:      inv.Total,
+				Balance:     inv.Balance,
+				Status:      invoiceStatus(inv.Balance, inv.Total),
+				Reference:   desc,
+				Detail:      strings.Join(itemDescs, " | "),
+				Source:      domain.SourceSIIGO,
+				ExternalID:  fmt.Sprintf("siigo-inv-%s", inv.ID),
 			}
 			inserted, err := h.store.ImportTransaction(t)
 			if err != nil {
@@ -309,6 +313,9 @@ func (h *SiigoHandler) syncInvoices(client *siigopkg.Client, dateStart, dateEnd 
 				result.InvoicesImported++
 			} else {
 				result.Updated++
+			}
+			if err := h.syncPaymentTerms(t.ID, desc, domain.TypeIngreso, t.Category, inv.Payments, "siigo-inv-"+inv.ID, result); err != nil {
+				return fmt.Errorf("saving payment terms for invoice %s: %w", inv.ID, err)
 			}
 		}
 		if page*siigoPageSize >= resp.Pagination.TotalResults {
@@ -334,13 +341,17 @@ func (h *SiigoHandler) syncPurchases(client *siigopkg.Client, dateStart, dateEnd
 				itemDescs = append(itemDescs, strings.TrimSpace(it.Description))
 			}
 			t := &domain.Transaction{
-				Date: pur.Date, Description: desc,
-				Category: categorizePurchase(itemDescs, ""), Type: domain.TypeEgreso,
-				Amount: pur.Total, Status: invoiceStatus(pur.Balance),
-				Reference:  desc,
-				Detail:     strings.Join(itemDescs, " | "),
-				Source:     domain.SourceSIIGO,
-				ExternalID: fmt.Sprintf("siigo-pur-%s", pur.ID),
+				Date:        pur.Date,
+				Description: desc,
+				Category:    categorizePurchase(itemDescs, ""),
+				Type:        domain.TypeEgreso,
+				Amount:      pur.Total,
+				Balance:     pur.Balance,
+				Status:      invoiceStatus(pur.Balance, pur.Total),
+				Reference:   desc,
+				Detail:      strings.Join(itemDescs, " | "),
+				Source:      domain.SourceSIIGO,
+				ExternalID:  fmt.Sprintf("siigo-pur-%s", pur.ID),
 			}
 			inserted, err := h.store.ImportTransaction(t)
 			if err != nil {
@@ -351,10 +362,47 @@ func (h *SiigoHandler) syncPurchases(client *siigopkg.Client, dateStart, dateEnd
 			} else {
 				result.Updated++
 			}
+			if err := h.syncPaymentTerms(t.ID, desc, domain.TypeEgreso, t.Category, pur.Payments, "siigo-pur-"+pur.ID, result); err != nil {
+				return fmt.Errorf("saving payment terms for purchase %s: %w", pur.ID, err)
+			}
 		}
 		if page*siigoPageSize >= resp.Pagination.TotalResults {
 			break
 		}
+	}
+	return nil
+}
+
+// syncPaymentTerms upserts one projected transaction per PaymentTerm when the
+// invoice/purchase has more than one installment (multi-cuota plan).
+func (h *SiigoHandler) syncPaymentTerms(
+	parentID, parentDesc string,
+	txType domain.TransactionType,
+	category string,
+	terms []siigopkg.PaymentTerm,
+	extPrefix string,
+	result *domain.SiigoSyncResult,
+) error {
+	if len(terms) <= 1 {
+		return nil
+	}
+	for i, pt := range terms {
+		proj := &domain.Transaction{
+			Date:         pt.DueDate,
+			Description:  fmt.Sprintf("%s — cuota %d/%d", parentDesc, i+1, len(terms)),
+			Category:     category,
+			Type:         txType,
+			Amount:       pt.Value,
+			Status:       domain.StatusPending,
+			Source:       domain.SourceSIIGO,
+			ExternalID:   fmt.Sprintf("%s-pterm-%d", extPrefix, pt.ID),
+			ParentID:     parentID,
+			IsProjection: true,
+		}
+		if _, err := h.store.ImportTransaction(proj); err != nil {
+			return err
+		}
+		result.Updated++
 	}
 	return nil
 }
@@ -369,9 +417,12 @@ func siigoRef(prefix string, number int) string {
 	return fmt.Sprintf("%s-%d", prefix, number)
 }
 
-func invoiceStatus(balance float64) domain.TransactionStatus {
-	if balance == 0 {
+func invoiceStatus(balance, total float64) domain.TransactionStatus {
+	if balance <= 0 {
 		return domain.StatusCompleted
+	}
+	if balance < total {
+		return domain.StatusPartial
 	}
 	return domain.StatusPending
 }

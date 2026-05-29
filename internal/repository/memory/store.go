@@ -203,11 +203,13 @@ func (s *Store) ImportTransaction(t *domain.Transaction) (bool, error) {
 	for id, existing := range s.transactions {
 		if existing.ExternalID == t.ExternalID {
 			existing.Amount = t.Amount
+			existing.Balance = t.Balance
 			existing.Status = t.Status
 			existing.Description = t.Description
 			existing.Date = t.Date
 			existing.UpdatedAt = time.Now()
 			s.transactions[id] = existing
+			t.ID = id
 			return false, nil
 		}
 	}
