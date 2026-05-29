@@ -176,20 +176,24 @@ func (h *TransactionsHandler) Summary(w http.ResponseWriter, r *http.Request) {
 	curY, curM := now.Year(), now.Month()
 	var totalBalance, monthlyIncome, monthlyExpense float64
 	for _, t := range all {
-		if t.Status != domain.StatusCompleted || t.IsProjection {
+		if t.IsProjection || t.Status == domain.StatusCancelled {
+			continue
+		}
+		r := receivedAmount(t)
+		if r == 0 {
 			continue
 		}
 		if t.Type == domain.TypeIngreso {
-			totalBalance += t.Amount
+			totalBalance += r
 		} else {
-			totalBalance -= t.Amount
+			totalBalance -= r
 		}
 		y, m, _ := txDate(t)
 		if y == curY && m == curM {
 			if t.Type == domain.TypeIngreso {
-				monthlyIncome += t.Amount
+				monthlyIncome += r
 			} else {
-				monthlyExpense += t.Amount
+				monthlyExpense += r
 			}
 		}
 	}
