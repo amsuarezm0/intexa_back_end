@@ -33,34 +33,111 @@ func (h *ProjectionsHandler) GetSummary(w http.ResponseWriter, r *http.Request) 
 		jsonError(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	now := time.Now()
-
+	now := time.Now().Truncate(24 * time.Hour)
 	balance := currentBalance(all)
 
-	// Build a day-offset map of net flows from pending/projection transactions.
-	// Overdue pending items (daysAway < 0) are applied at day 0.
+	// Index all transactions for O(1) parent lookup.
+	txByID := make(map[string]*domain.Transaction, len(all))
+	for _, t := range all {
+		txByID[t.ID] = t
+	}
+
+	// Group payment-term projections by parent ID, sorted by due date (earliest first).
+	type ptEntry struct {
+		tx      *domain.Transaction
+		dueDate time.Time
+	}
+	parentToTerms := map[string][]ptEntry{}
+	for _, t := range all {
+		if t.ParentID == "" || !t.IsProjection {
+			continue
+		}
+		d, err := time.Parse("2006-01-02", t.Date)
+		if err != nil {
+			continue
+		}
+		parentToTerms[t.ParentID] = append(parentToTerms[t.ParentID], ptEntry{t, d})
+	}
+	for pid := range parentToTerms {
+		terms := parentToTerms[pid]
+		sort.Slice(terms, func(i, j int) bool { return terms[i].dueDate.Before(terms[j].dueDate) })
+		parentToTerms[pid] = terms
+	}
+
 	dailyNet := map[int]float64{}
 	var projInc, projExp float64
+
+	addFlow := func(txType domain.TransactionType, amount float64, daysAway int) {
+		if txType == domain.TypeIngreso {
+			dailyNet[daysAway] += amount
+			projInc += amount
+		} else {
+			dailyNet[daysAway] -= amount
+			projExp += amount
+		}
+	}
+
+	parseDaysAway := func(dateStr string) (int, bool) {
+		d, err := time.Parse("2006-01-02", dateStr)
+		if err != nil {
+			return 0, false
+		}
+		n := int(math.Round(d.Sub(now).Hours() / 24))
+		if n < 0 {
+			n = 0
+		}
+		return n, true
+	}
+
+	// Single-payment transactions: pending or partial, no payment-term children.
 	for _, t := range all {
 		if t.Status == domain.StatusCompleted || t.Status == domain.StatusCancelled {
 			continue
 		}
-		daysAway := int(math.Round(t.CreatedAt.Sub(now).Hours() / 24))
-		if daysAway < 0 {
-			daysAway = 0
+		if t.ParentID != "" && t.IsProjection {
+			continue // handled via parent below
 		}
-		if daysAway <= days {
-			if t.Type == domain.TypeIngreso {
-				dailyNet[daysAway] += t.Amount
-				projInc += t.Amount
-			} else {
-				dailyNet[daysAway] -= t.Amount
-				projExp += t.Amount
+		if _, hasTerms := parentToTerms[t.ID]; hasTerms {
+			continue // handled via payment terms below
+		}
+		daysAway, ok := parseDaysAway(t.Date)
+		if !ok || daysAway > days {
+			continue
+		}
+		// Use remaining balance for partial invoices; full amount otherwise.
+		amount := t.Amount
+		if t.Balance > 0 {
+			amount = t.Balance
+		}
+		addFlow(t.Type, amount, daysAway)
+	}
+
+	// Multi-payment transactions: distribute remaining balance across installments (FIFO).
+	for parentID, terms := range parentToTerms {
+		parent, ok := txByID[parentID]
+		if !ok {
+			continue
+		}
+		if parent.Status == domain.StatusCompleted || parent.Status == domain.StatusCancelled {
+			continue
+		}
+		alreadyPaid := parent.Amount - parent.Balance
+		for _, pt := range terms {
+			if alreadyPaid >= pt.tx.Amount {
+				alreadyPaid -= pt.tx.Amount // this installment is covered by past payments
+				continue
 			}
+			effective := pt.tx.Amount - alreadyPaid
+			alreadyPaid = 0
+			daysAway, ok := parseDaysAway(pt.tx.Date)
+			if !ok || daysAway > days {
+				continue
+			}
+			addFlow(parent.Type, effective, daysAway)
 		}
 	}
 
-	// Sample the running balance at evenly-spaced checkpoints across the window
+	// Build the running-balance chart.
 	checkpoints := buildCheckpoints(days)
 	chartData := make([]domain.ProjectionPoint, len(checkpoints))
 	running := balance
@@ -85,18 +162,15 @@ func (h *ProjectionsHandler) GetSummary(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	// Alerts: pending and projection transactions, most urgent first
+	// Alerts: show individual installments for multi-payment invoices, parent for single-payment.
 	type entry struct {
 		alert    domain.ProjectionAlert
 		daysAway int
 		amount   float64
 	}
 	var entries []entry
-	for _, t := range all {
-		if t.Status == domain.StatusCompleted || t.Status == domain.StatusCancelled {
-			continue
-		}
-		daysAway := int(math.Round(t.CreatedAt.Sub(now).Hours() / 24))
+
+	addAlert := func(t *domain.Transaction, amount float64, daysAway int) {
 		color, icon := "brand-success", "FileCheck"
 		if t.Type == domain.TypeEgreso {
 			color, icon = "brand-danger", "AlertCircle"
@@ -116,13 +190,59 @@ func (h *ProjectionsHandler) GetSummary(w http.ResponseWriter, r *http.Request) 
 				Title:       t.Description,
 				Description: t.Category,
 				DueDate:     dueStr,
-				Amount:      t.Amount,
+				Amount:      amount,
 				Color:       color,
 			},
 			daysAway: daysAway,
-			amount:   t.Amount,
+			amount:   amount,
 		})
 	}
+
+	for _, t := range all {
+		if t.Status == domain.StatusCompleted || t.Status == domain.StatusCancelled {
+			continue
+		}
+		if t.ParentID != "" && t.IsProjection {
+			continue
+		}
+		if _, hasTerms := parentToTerms[t.ID]; hasTerms {
+			continue
+		}
+		daysAway, ok := parseDaysAway(t.Date)
+		if !ok {
+			continue
+		}
+		amount := t.Amount
+		if t.Balance > 0 {
+			amount = t.Balance
+		}
+		addAlert(t, amount, daysAway)
+	}
+
+	for parentID, terms := range parentToTerms {
+		parent, ok := txByID[parentID]
+		if !ok {
+			continue
+		}
+		if parent.Status == domain.StatusCompleted || parent.Status == domain.StatusCancelled {
+			continue
+		}
+		alreadyPaid := parent.Amount - parent.Balance
+		for _, pt := range terms {
+			if alreadyPaid >= pt.tx.Amount {
+				alreadyPaid -= pt.tx.Amount
+				continue
+			}
+			effective := pt.tx.Amount - alreadyPaid
+			alreadyPaid = 0
+			daysAway, ok := parseDaysAway(pt.tx.Date)
+			if !ok {
+				continue
+			}
+			addAlert(pt.tx, effective, daysAway)
+		}
+	}
+
 	sort.Slice(entries, func(i, j int) bool {
 		if entries[i].daysAway != entries[j].daysAway {
 			return entries[i].daysAway < entries[j].daysAway
@@ -170,15 +290,19 @@ func (h *ProjectionsHandler) Simulate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	base := currentBalance(all)
-	// Include pending flows in base
+	// Include pending and partial flows in base
 	for _, t := range all {
-		if t.Status != domain.StatusPending || t.IsProjection {
+		if t.IsProjection || (t.Status != domain.StatusPending && t.Status != domain.StatusPartial) {
 			continue
 		}
+		amount := t.Amount
+		if t.Balance > 0 {
+			amount = t.Balance
+		}
 		if t.Type == domain.TypeIngreso {
-			base += t.Amount
+			base += amount
 		} else {
-			base -= t.Amount
+			base -= amount
 		}
 	}
 
