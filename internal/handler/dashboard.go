@@ -90,10 +90,14 @@ func (h *DashboardHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 		pie = pie[:5]
 	}
 
-	// Weekly breakdown for the current month
+	// Weekly breakdown for the current month (cash basis)
 	weekMap := map[int]*domain.WeeklyComparison{}
 	for _, t := range all {
-		if t.IsProjection || t.Status != domain.StatusCompleted {
+		if t.IsProjection || t.Status == domain.StatusCancelled {
+			continue
+		}
+		r := receivedAmount(t)
+		if r == 0 {
 			continue
 		}
 		ty, tm, td := txDate(t)
@@ -105,9 +109,9 @@ func (h *DashboardHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 			weekMap[week] = &domain.WeeklyComparison{Week: week}
 		}
 		if t.Type == domain.TypeIngreso {
-			weekMap[week].Ingresos += t.Amount
+			weekMap[week].Ingresos += r
 		} else {
-			weekMap[week].Egresos += t.Amount
+			weekMap[week].Egresos += r
 		}
 	}
 	weeklyData := []domain.WeeklyComparison{}

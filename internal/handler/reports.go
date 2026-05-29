@@ -192,7 +192,11 @@ func categoryBreakdownRange(txs []*domain.Transaction, from, to time.Time) []dom
 	catMap := map[string]float64{}
 	var total float64
 	for _, t := range txs {
-		if t.IsProjection || t.Type != domain.TypeEgreso {
+		if t.IsProjection || t.Status == domain.StatusCancelled || t.Type != domain.TypeEgreso {
+			continue
+		}
+		r := receivedAmount(t)
+		if r == 0 {
 			continue
 		}
 		d, err := time.Parse("2006-01-02", t.Date)
@@ -202,8 +206,8 @@ func categoryBreakdownRange(txs []*domain.Transaction, from, to time.Time) []dom
 		if d.Before(from) || d.After(to) {
 			continue
 		}
-		catMap[t.Category] += t.Amount
-		total += t.Amount
+		catMap[t.Category] += r
+		total += r
 	}
 	pie := []domain.PieSlice{}
 	for cat, v := range catMap {
@@ -216,12 +220,16 @@ func categoryBreakdownRange(txs []*domain.Transaction, from, to time.Time) []dom
 	return pie
 }
 
-// categoryComparisonTable builds per-category spending for [from,to] vs [prevFrom,prevTo].
+// categoryComparisonTable builds per-category cash paid for [from,to] vs [prevFrom,prevTo].
 func categoryComparisonTable(txs []*domain.Transaction, from, to, prevFrom, prevTo time.Time) []domain.CategoryRow {
 	curr := map[string]float64{}
 	prev := map[string]float64{}
 	for _, t := range txs {
-		if t.IsProjection || t.Type != domain.TypeEgreso {
+		if t.IsProjection || t.Status == domain.StatusCancelled || t.Type != domain.TypeEgreso {
+			continue
+		}
+		r := receivedAmount(t)
+		if r == 0 {
 			continue
 		}
 		d, err := time.Parse("2006-01-02", t.Date)
@@ -229,10 +237,10 @@ func categoryComparisonTable(txs []*domain.Transaction, from, to, prevFrom, prev
 			d = t.CreatedAt
 		}
 		if !d.Before(from) && !d.After(to) {
-			curr[t.Category] += t.Amount
+			curr[t.Category] += r
 		}
 		if !d.Before(prevFrom) && !d.After(prevTo) {
-			prev[t.Category] += t.Amount
+			prev[t.Category] += r
 		}
 	}
 	rows := []domain.CategoryRow{}

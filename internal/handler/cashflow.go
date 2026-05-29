@@ -28,7 +28,7 @@ func (h *CashFlowHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 	}
 	now := time.Now()
 
-	// ── Last 7 days ──────────────────────────────────────────────────────────
+	// ── Last 7 days (cash received/paid only) ────────────────────────────────
 	days := make([]domain.CashFlowDay, 7)
 	for i := 6; i >= 0; i-- {
 		day := now.AddDate(0, 0, -i)
@@ -38,12 +38,16 @@ func (h *CashFlowHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 			if t.IsProjection {
 				continue
 			}
+			r := receivedAmount(t)
+			if r == 0 {
+				continue
+			}
 			ty, tm, td := txDate(t)
 			if ty == dy && tm == dm && td == dd {
 				if t.Type == domain.TypeIngreso {
-					ing += t.Amount
+					ing += r
 				} else {
-					egr += t.Amount
+					egr += r
 				}
 			}
 		}
@@ -55,12 +59,18 @@ func (h *CashFlowHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// ── Projected balance = current balance ± pending transactions within 30 days ──
+	// ── Projected balance = cash received to date ± expected flows within 30 days ──
+	// currentBalance already uses cash-basis (receivedAmount), so Pendiente and
+	// remaining Parcial balances are not yet counted — we add them here.
 	balance := currentBalance(all)
 	horizon := now.AddDate(0, 0, 30)
 	var pendingInc, pendingExp float64
 	for _, t := range all {
-		if t.Status != domain.StatusPending || t.IsProjection {
+		if t.IsProjection {
+			continue
+		}
+		owed := pendingAmount(t)
+		if owed == 0 {
 			continue
 		}
 		ty, tm, td := txDate(t)
@@ -69,9 +79,9 @@ func (h *CashFlowHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if t.Type == domain.TypeIngreso {
-			pendingInc += t.Amount
+			pendingInc += owed
 		} else {
-			pendingExp += t.Amount
+			pendingExp += owed
 		}
 	}
 	projected := balance + pendingInc - pendingExp
@@ -95,24 +105,34 @@ func (h *CashFlowHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// ── Alerts: pending transactions ─────────────────────────────────────
+	// ── Alerts: pending and partial transactions ──────────────────────────────
 	alerts := []domain.Alert{}
 	for _, t := range all {
-		if t.Status != domain.StatusPending || t.IsProjection {
+		if t.IsProjection {
+			continue
+		}
+		owed := pendingAmount(t)
+		if owed == 0 {
 			continue
 		}
 		kind := "success"
 		title := "Cobro Pendiente"
+		if t.Status == domain.StatusPartial {
+			title = "Cobro Parcial"
+		}
 		if t.Type == domain.TypeEgreso {
 			kind = "danger"
 			title = "Pago Pendiente"
+			if t.Status == domain.StatusPartial {
+				title = "Pago Parcial"
+			}
 		}
 		alerts = append(alerts, domain.Alert{
 			ID:          t.ID,
 			Type:        kind,
 			Title:       title,
 			Description: t.Description,
-			Amount:      t.Amount,
+			Amount:      owed,
 			DueDate:     t.Date,
 		})
 	}

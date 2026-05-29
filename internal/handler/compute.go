@@ -50,18 +50,48 @@ func signedPct(current, previous float64) string {
 	return fmt.Sprintf("%.1f%%", d)
 }
 
-// currentBalance returns the net of all non-projection transactions (all statuses).
-// Mirrors monthlyTotals which also counts all statuses — consistent accrual-basis view.
+// receivedAmount returns the cash actually received/paid for t on a cash basis:
+// Completado → full Amount; Parcial → Amount minus remaining Balance; otherwise 0.
+func receivedAmount(t *domain.Transaction) float64 {
+	switch t.Status {
+	case domain.StatusCompleted:
+		return t.Amount
+	case domain.StatusPartial:
+		return t.Amount - t.Balance
+	default:
+		return 0
+	}
+}
+
+// pendingAmount returns the cash still owed/expected from t:
+// Pendiente → full Amount; Parcial → remaining Balance; otherwise 0.
+func pendingAmount(t *domain.Transaction) float64 {
+	switch t.Status {
+	case domain.StatusPending:
+		return t.Amount
+	case domain.StatusPartial:
+		return t.Balance
+	default:
+		return 0
+	}
+}
+
+// currentBalance returns the net cash actually received to date (cash basis).
+// Completado counts at full Amount; Parcial at Amount−Balance; Pendiente counts 0.
 func currentBalance(txs []*domain.Transaction) float64 {
 	var bal float64
 	for _, t := range txs {
 		if t.IsProjection || t.Status == domain.StatusCancelled {
 			continue
 		}
+		r := receivedAmount(t)
+		if r == 0 {
+			continue
+		}
 		if t.Type == domain.TypeIngreso {
-			bal += t.Amount
+			bal += r
 		} else {
-			bal -= t.Amount
+			bal -= r
 		}
 	}
 	return bal
@@ -78,10 +108,15 @@ func txDate(t *domain.Transaction) (int, time.Month, int) {
 	return y, m, day
 }
 
-// monthlyTotals sums ingresos and egresos for a given year/month (completed non-projections only).
+// monthlyTotals sums cash received/paid for a given year/month (cash basis, non-projections).
+// Completado counts at full Amount; Parcial at Amount−Balance; Pendiente counts 0.
 func monthlyTotals(txs []*domain.Transaction, year int, month time.Month) (income, expense float64) {
 	for _, t := range txs {
-		if t.IsProjection || t.Status != domain.StatusCompleted {
+		if t.IsProjection || t.Status == domain.StatusCancelled {
+			continue
+		}
+		r := receivedAmount(t)
+		if r == 0 {
 			continue
 		}
 		y, m, _ := txDate(t)
@@ -89,20 +124,24 @@ func monthlyTotals(txs []*domain.Transaction, year int, month time.Month) (incom
 			continue
 		}
 		if t.Type == domain.TypeIngreso {
-			income += t.Amount
+			income += r
 		} else {
-			expense += t.Amount
+			expense += r
 		}
 	}
 	return
 }
 
-// quarterlyTotals sums ingresos and egresos for a quarter (1–4) of a given year (completed non-projections only).
+// quarterlyTotals sums cash received/paid for a quarter (1–4) of a given year (cash basis).
 func quarterlyTotals(txs []*domain.Transaction, year, quarter int) (income, expense float64) {
 	start := time.Month((quarter-1)*3 + 1)
 	end := start + 2
 	for _, t := range txs {
-		if t.IsProjection || t.Status != domain.StatusCompleted {
+		if t.IsProjection || t.Status == domain.StatusCancelled {
+			continue
+		}
+		r := receivedAmount(t)
+		if r == 0 {
 			continue
 		}
 		y, m, _ := txDate(t)
@@ -110,18 +149,22 @@ func quarterlyTotals(txs []*domain.Transaction, year, quarter int) (income, expe
 			continue
 		}
 		if t.Type == domain.TypeIngreso {
-			income += t.Amount
+			income += r
 		} else {
-			expense += t.Amount
+			expense += r
 		}
 	}
 	return
 }
 
-// yearlyTotals sums ingresos and egresos for a full calendar year (completed non-projections only).
+// yearlyTotals sums cash received/paid for a full calendar year (cash basis).
 func yearlyTotals(txs []*domain.Transaction, year int) (income, expense float64) {
 	for _, t := range txs {
-		if t.IsProjection || t.Status != domain.StatusCompleted {
+		if t.IsProjection || t.Status == domain.StatusCancelled {
+			continue
+		}
+		r := receivedAmount(t)
+		if r == 0 {
 			continue
 		}
 		y, _, _ := txDate(t)
@@ -129,45 +172,55 @@ func yearlyTotals(txs []*domain.Transaction, year int) (income, expense float64)
 			continue
 		}
 		if t.Type == domain.TypeIngreso {
-			income += t.Amount
+			income += r
 		} else {
-			expense += t.Amount
+			expense += r
 		}
 	}
 	return
 }
 
-// expenseByCategory sums egresos grouped by category (completed non-projections only).
+// expenseByCategory sums cash paid grouped by category (cash basis, non-projections).
 func expenseByCategory(txs []*domain.Transaction) map[string]float64 {
 	m := map[string]float64{}
 	for _, t := range txs {
-		if t.IsProjection || t.Status != domain.StatusCompleted || t.Type != domain.TypeEgreso {
+		if t.IsProjection || t.Status == domain.StatusCancelled || t.Type != domain.TypeEgreso {
 			continue
 		}
-		m[t.Category] += t.Amount
+		r := receivedAmount(t)
+		if r > 0 {
+			m[t.Category] += r
+		}
 	}
 	return m
 }
 
-// incomeByCategory sums ingresos grouped by category (completed non-projections only).
+// incomeByCategory sums cash received grouped by category (cash basis, non-projections).
 func incomeByCategory(txs []*domain.Transaction) map[string]float64 {
 	m := map[string]float64{}
 	for _, t := range txs {
-		if t.IsProjection || t.Status != domain.StatusCompleted || t.Type != domain.TypeIngreso {
+		if t.IsProjection || t.Status == domain.StatusCancelled || t.Type != domain.TypeIngreso {
 			continue
 		}
-		m[t.Category] += t.Amount
+		r := receivedAmount(t)
+		if r > 0 {
+			m[t.Category] += r
+		}
 	}
 	return m
 }
 
-// pendingAlerts returns Alert items for pending transactions that are >= minAgeDays old,
-// sorted by amount descending, capped at maxCount.
+// pendingAlerts returns Alert items for Pendiente and Parcial transactions that are
+// >= minAgeDays old, sorted by outstanding amount descending, capped at maxCount.
 // Age is measured from the transaction's accounting date (t.Date), not CreatedAt.
 func pendingAlerts(txs []*domain.Transaction, now time.Time, minAgeDays, maxCount int) []domain.Alert {
 	alerts := []domain.Alert{}
 	for _, t := range txs {
-		if t.Status != domain.StatusPending || t.IsProjection {
+		if t.IsProjection {
+			continue
+		}
+		owed := pendingAmount(t)
+		if owed == 0 {
 			continue
 		}
 		txY, txM, txD := txDate(t)
@@ -180,12 +233,16 @@ func pendingAlerts(txs []*domain.Transaction, now time.Time, minAgeDays, maxCoun
 		if ageDays > 10 {
 			kind = "danger"
 		}
+		label := "Pendiente"
+		if t.Status == domain.StatusPartial {
+			label = "Parcial"
+		}
 		alerts = append(alerts, domain.Alert{
 			ID:          t.ID,
 			Type:        kind,
 			Title:       t.Description,
-			Description: fmt.Sprintf("Pendiente hace %d días · %s", ageDays, t.Category),
-			Amount:      t.Amount,
+			Description: fmt.Sprintf("%s hace %d días · %s", label, ageDays, t.Category),
+			Amount:      owed,
 			DueDate:     t.Date,
 		})
 	}
