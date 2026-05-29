@@ -15,12 +15,12 @@ const (
 	StatusPending   TransactionStatus = "Pendiente"
 	StatusCancelled TransactionStatus = "Cancelado"
 
-	SourceSIIGO   TransactionSource = "Siigo"
+	SourceSIIGO  TransactionSource = "Siigo"
 	SourceManual TransactionSource = "Manual"
 
-	RoleAdmin     UserRole = "ADMINISTRADOR"
-	RoleTreasury  UserRole = "TESORERÍA"
-	RoleReadOnly  UserRole = "CONSULTA"
+	RoleAdmin    UserRole = "ADMINISTRADOR"
+	RoleTreasury UserRole = "TESORERÍA"
+	RoleReadOnly UserRole = "CONSULTA"
 )
 
 type Transaction struct {
@@ -110,14 +110,14 @@ type WeeklyComparison struct {
 }
 
 type DashboardSummary struct {
-	Stats           []StatCard         `json:"stats"`
-	NetFlow         float64            `json:"netFlow"`
-	MonthIncome     float64            `json:"monthIncome"`
-	MonthExpense    float64            `json:"monthExpense"`
-	ChartData       []ChartDataPoint   `json:"chartData"`
-	ExpensePie      []PieSlice         `json:"expensePie"`
-	Alerts          []Alert            `json:"alerts"`
-	WeeklyData      []WeeklyComparison `json:"weeklyData"`
+	Stats        []StatCard         `json:"stats"`
+	NetFlow      float64            `json:"netFlow"`
+	MonthIncome  float64            `json:"monthIncome"`
+	MonthExpense float64            `json:"monthExpense"`
+	ChartData    []ChartDataPoint   `json:"chartData"`
+	ExpensePie   []PieSlice         `json:"expensePie"`
+	Alerts       []Alert            `json:"alerts"`
+	WeeklyData   []WeeklyComparison `json:"weeklyData"`
 }
 
 type CashFlowDay struct {
@@ -141,21 +141,21 @@ type ProjectionPoint struct {
 }
 
 type ProjectionAlert struct {
-	ID          string `json:"id"`
-	Icon        string `json:"icon"`
-	Title       string `json:"title"`
-	Description string `json:"description"`
-	DueDate     string `json:"dueDate"`
-	Amount      string `json:"amount"`
-	Color       string `json:"color"`
+	ID          string  `json:"id"`
+	Icon        string  `json:"icon"`
+	Title       string  `json:"title"`
+	Description string  `json:"description"`
+	DueDate     string  `json:"dueDate"`
+	Amount      float64 `json:"amount"`
+	Color       string  `json:"color"`
 }
 
 type ProjectionSummary struct {
-	ChartData          []ProjectionPoint `json:"chartData"`
-	ProjectedIncome    float64           `json:"projectedIncome"`
-	ProjectedExpenses  float64           `json:"projectedExpenses"`
-	EstimatedBalance   float64           `json:"estimatedBalance"`
-	Alerts             []ProjectionAlert `json:"alerts"`
+	ChartData         []ProjectionPoint `json:"chartData"`
+	ProjectedIncome   float64           `json:"projectedIncome"`
+	ProjectedExpenses float64           `json:"projectedExpenses"`
+	EstimatedBalance  float64           `json:"estimatedBalance"`
+	Alerts            []ProjectionAlert `json:"alerts"`
 }
 
 type ReportDataPoint struct {
@@ -173,9 +173,9 @@ type CategoryRow struct {
 }
 
 type AnnualProjection struct {
-	ProjectedClose  float64 `json:"projectedClose"`
-	Probability     float64 `json:"probability"`
-	InsightText     string  `json:"insightText"`
+	ProjectedClose float64 `json:"projectedClose"`
+	Probability    float64 `json:"probability"`
+	InsightText    string  `json:"insightText"`
 }
 
 type ReportSummary struct {

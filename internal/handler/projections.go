@@ -116,7 +116,7 @@ func (h *ProjectionsHandler) GetSummary(w http.ResponseWriter, r *http.Request) 
 				Title:       t.Description,
 				Description: t.Category,
 				DueDate:     dueStr,
-				Amount:      formatCOP(t.Amount),
+				Amount:      t.Amount,
 				Color:       color,
 			},
 			daysAway: daysAway,

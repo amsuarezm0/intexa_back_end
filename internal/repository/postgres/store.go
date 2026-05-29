@@ -105,7 +105,6 @@ func (s *Store) DeleteTransaction(id string) (bool, error) {
 	return tag.RowsAffected() > 0, err
 }
 
-
 // ── Users ─────────────────────────────────────────────────────────────────────
 
 func (s *Store) GetUserByEmail(email string) (*domain.User, bool, error) {

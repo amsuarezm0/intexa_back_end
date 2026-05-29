@@ -129,7 +129,7 @@ func (h *ReportsHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 	default:
 		chart = make([]domain.ReportDataPoint, 6)
 		for i := 0; i < 6; i++ {
-			t := now.AddDate(0, -(5-i), 0)
+			t := now.AddDate(0, -(5 - i), 0)
 			inc, exp := monthlyTotals(all, t.Year(), t.Month())
 			chart[i] = domain.ReportDataPoint{
 				Name:     spanishMonths[t.Month()],

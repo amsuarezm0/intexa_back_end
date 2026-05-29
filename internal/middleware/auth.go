@@ -8,6 +8,30 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
+// RequireRole returns a middleware that allows only requests whose JWT `role`
+// claim matches one of the provided roles (case-insensitive).
+func RequireRole(roles ...string) func(http.Handler) http.Handler {
+	allowed := make(map[string]bool, len(roles))
+	for _, r := range roles {
+		allowed[strings.ToUpper(r)] = true
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			claims, ok := ClaimsFromContext(r.Context())
+			if !ok {
+				http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+				return
+			}
+			role, _ := claims["role"].(string)
+			if !allowed[strings.ToUpper(role)] {
+				http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 type contextKey string
 
 const UserClaimsKey contextKey = "userClaims"

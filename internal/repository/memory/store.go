@@ -247,7 +247,6 @@ func (s *Store) DeleteTransaction(id string) (bool, error) {
 	return true, nil
 }
 
-
 // ── Users ─────────────────────────────────────────────────────────────────────
 
 func (s *Store) GetUserByEmail(email string) (*domain.User, bool, error) {
@@ -330,7 +329,6 @@ func (s *Store) DeleteUser(id string) (bool, error) {
 	u.Active = false
 	return true, nil
 }
-
 
 // ── Access control ────────────────────────────────────────────────────────────
 

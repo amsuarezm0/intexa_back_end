@@ -1,13 +1,11 @@
 package handler
 
 import (
-	"fmt"
 	"net/http"
 	"sort"
 	"time"
 
 	"github.com/intexa/arca-api/internal/domain"
-	"github.com/intexa/arca-api/internal/middleware"
 	"github.com/intexa/arca-api/internal/repository"
 )
 
@@ -63,10 +61,11 @@ func (h *DashboardHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	// Chart: last 7 months
+	// Chart: last 7 months — anchor to 1st to avoid day-overflow (e.g. May 29 - 3mo = Feb 29 → Mar 1 in non-leap years)
 	chartData := make([]domain.ChartDataPoint, 7)
+	firstOfMonth := time.Date(y, m, 1, 0, 0, 0, 0, now.Location())
 	for i := 0; i < 7; i++ {
-		t := now.AddDate(0, -(6-i), 0)
+		t := firstOfMonth.AddDate(0, -(6 - i), 0)
 		inc, exp := monthlyTotals(all, t.Year(), t.Month())
 		chartData[i] = domain.ChartDataPoint{
 			Name:     spanishMonths[t.Month()],
@@ -94,7 +93,7 @@ func (h *DashboardHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 	// Weekly breakdown for the current month
 	weekMap := map[int]*domain.WeeklyComparison{}
 	for _, t := range all {
-		if t.IsProjection {
+		if t.IsProjection || t.Status != domain.StatusCompleted {
 			continue
 		}
 		ty, tm, td := txDate(t)
@@ -123,7 +122,7 @@ func (h *DashboardHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 		alerts = append([]domain.Alert{{
 			ID: "balance-warning", Type: "danger",
 			Title:       "Saldo Negativo",
-			Description: fmt.Sprintf("El saldo actual es %s. Revise los egresos pendientes.", formatCOP(balance)),
+			Description: "El saldo actual es negativo. Revise los egresos pendientes.",
 			Amount:      -balance,
 		}}, alerts...)
 	}
@@ -160,12 +159,7 @@ func (h *DashboardHandler) UpdateBankBalance(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	updatedBy := "Sistema"
-	if claims, ok := middleware.ClaimsFromContext(r.Context()); ok {
-		if email, _ := claims["sub"].(string); email != "" {
-			updatedBy = email
-		}
-	}
+	updatedBy, _ := actorFrom(r)
 
 	b := domain.BankBalance{
 		Amount:    req.Amount,

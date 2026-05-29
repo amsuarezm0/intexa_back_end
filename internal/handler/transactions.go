@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/intexa/arca-api/internal/domain"
@@ -171,14 +172,25 @@ func (h *TransactionsHandler) Summary(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
+	now := time.Now()
+	curY, curM := now.Year(), now.Month()
 	var totalBalance, monthlyIncome, monthlyExpense float64
 	for _, t := range all {
+		if t.Status != domain.StatusCompleted || t.IsProjection {
+			continue
+		}
 		if t.Type == domain.TypeIngreso {
 			totalBalance += t.Amount
-			monthlyIncome += t.Amount
 		} else {
 			totalBalance -= t.Amount
-			monthlyExpense += t.Amount
+		}
+		y, m, _ := txDate(t)
+		if y == curY && m == curM {
+			if t.Type == domain.TypeIngreso {
+				monthlyIncome += t.Amount
+			} else {
+				monthlyExpense += t.Amount
+			}
 		}
 	}
 	jsonOK(w, domain.TransactionSummary{

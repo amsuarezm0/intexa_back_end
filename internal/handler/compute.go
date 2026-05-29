@@ -78,10 +78,10 @@ func txDate(t *domain.Transaction) (int, time.Month, int) {
 	return y, m, day
 }
 
-// monthlyTotals sums ingresos and egresos for a given year/month (non-projections only).
+// monthlyTotals sums ingresos and egresos for a given year/month (completed non-projections only).
 func monthlyTotals(txs []*domain.Transaction, year int, month time.Month) (income, expense float64) {
 	for _, t := range txs {
-		if t.IsProjection {
+		if t.IsProjection || t.Status != domain.StatusCompleted {
 			continue
 		}
 		y, m, _ := txDate(t)
@@ -97,12 +97,12 @@ func monthlyTotals(txs []*domain.Transaction, year int, month time.Month) (incom
 	return
 }
 
-// quarterlyTotals sums ingresos and egresos for a quarter (1–4) of a given year.
+// quarterlyTotals sums ingresos and egresos for a quarter (1–4) of a given year (completed non-projections only).
 func quarterlyTotals(txs []*domain.Transaction, year, quarter int) (income, expense float64) {
 	start := time.Month((quarter-1)*3 + 1)
 	end := start + 2
 	for _, t := range txs {
-		if t.IsProjection {
+		if t.IsProjection || t.Status != domain.StatusCompleted {
 			continue
 		}
 		y, m, _ := txDate(t)
@@ -118,10 +118,10 @@ func quarterlyTotals(txs []*domain.Transaction, year, quarter int) (income, expe
 	return
 }
 
-// yearlyTotals sums ingresos and egresos for a full calendar year.
+// yearlyTotals sums ingresos and egresos for a full calendar year (completed non-projections only).
 func yearlyTotals(txs []*domain.Transaction, year int) (income, expense float64) {
 	for _, t := range txs {
-		if t.IsProjection {
+		if t.IsProjection || t.Status != domain.StatusCompleted {
 			continue
 		}
 		y, _, _ := txDate(t)
@@ -137,11 +137,11 @@ func yearlyTotals(txs []*domain.Transaction, year int) (income, expense float64)
 	return
 }
 
-// expenseByCategory sums egresos grouped by category (non-projections).
+// expenseByCategory sums egresos grouped by category (completed non-projections only).
 func expenseByCategory(txs []*domain.Transaction) map[string]float64 {
 	m := map[string]float64{}
 	for _, t := range txs {
-		if t.IsProjection || t.Type != domain.TypeEgreso {
+		if t.IsProjection || t.Status != domain.StatusCompleted || t.Type != domain.TypeEgreso {
 			continue
 		}
 		m[t.Category] += t.Amount
@@ -149,11 +149,11 @@ func expenseByCategory(txs []*domain.Transaction) map[string]float64 {
 	return m
 }
 
-// incomeByCategory sums ingresos grouped by category (non-projections).
+// incomeByCategory sums ingresos grouped by category (completed non-projections only).
 func incomeByCategory(txs []*domain.Transaction) map[string]float64 {
 	m := map[string]float64{}
 	for _, t := range txs {
-		if t.IsProjection || t.Type != domain.TypeIngreso {
+		if t.IsProjection || t.Status != domain.StatusCompleted || t.Type != domain.TypeIngreso {
 			continue
 		}
 		m[t.Category] += t.Amount
@@ -163,25 +163,28 @@ func incomeByCategory(txs []*domain.Transaction) map[string]float64 {
 
 // pendingAlerts returns Alert items for pending transactions that are >= minAgeDays old,
 // sorted by amount descending, capped at maxCount.
+// Age is measured from the transaction's accounting date (t.Date), not CreatedAt.
 func pendingAlerts(txs []*domain.Transaction, now time.Time, minAgeDays, maxCount int) []domain.Alert {
 	alerts := []domain.Alert{}
 	for _, t := range txs {
 		if t.Status != domain.StatusPending || t.IsProjection {
 			continue
 		}
-		age := now.Sub(t.CreatedAt)
-		if int(age.Hours()/24) < minAgeDays {
+		txY, txM, txD := txDate(t)
+		txDay := time.Date(txY, txM, txD, 0, 0, 0, 0, now.Location())
+		ageDays := int(now.Sub(txDay).Hours() / 24)
+		if ageDays < minAgeDays {
 			continue
 		}
 		kind := "warning"
-		if age > 10*24*time.Hour {
+		if ageDays > 10 {
 			kind = "danger"
 		}
 		alerts = append(alerts, domain.Alert{
 			ID:          t.ID,
 			Type:        kind,
 			Title:       t.Description,
-			Description: fmt.Sprintf("Pendiente hace %d días · %s", int(age.Hours()/24), t.Category),
+			Description: fmt.Sprintf("Pendiente hace %d días · %s", ageDays, t.Category),
 			Amount:      t.Amount,
 			DueDate:     t.Date,
 		})

@@ -18,8 +18,8 @@ type SignInResponse struct {
 // Pagination wrapper used by list endpoints
 
 type Pagination struct {
-	Page      int `json:"page"`
-	PerPage   int `json:"per_page"`
+	Page         int `json:"page"`
+	PerPage      int `json:"per_page"`
 	TotalResults int `json:"total_results"`
 }
 
@@ -41,7 +41,7 @@ type Invoice struct {
 	Prefix       string          `json:"prefix"`
 	Number       int             `json:"number"`
 	Name         string          `json:"name"`
-	Date         string          `json:"date"`         // YYYY-MM-DD
+	Date         string          `json:"date"` // YYYY-MM-DD
 	DueDate      string          `json:"due_date"`
 	Customer     InvoiceCustomer `json:"customer"`
 	Seller       int             `json:"seller"`
@@ -165,13 +165,13 @@ type Customer struct {
 // Product
 
 type Product struct {
-	Code        string  `json:"code"`
-	Name        string  `json:"name"`
-	AccountGroup int    `json:"account_group"`
-	Type        string  `json:"type"`
-	TaxClassification string `json:"tax_classification"`
-	Active      bool    `json:"active"`
-	Price       []ProductPrice `json:"price"`
+	Code              string         `json:"code"`
+	Name              string         `json:"name"`
+	AccountGroup      int            `json:"account_group"`
+	Type              string         `json:"type"`
+	TaxClassification string         `json:"tax_classification"`
+	Active            bool           `json:"active"`
+	Price             []ProductPrice `json:"price"`
 }
 
 type ProductPrice struct {

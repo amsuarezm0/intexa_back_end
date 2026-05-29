@@ -14,9 +14,9 @@ import (
 	"github.com/intexa/arca-api/internal/db"
 	"github.com/intexa/arca-api/internal/handler"
 	"github.com/intexa/arca-api/internal/middleware"
+	"github.com/intexa/arca-api/internal/repository"
 	"github.com/intexa/arca-api/internal/repository/memory"
 	"github.com/intexa/arca-api/internal/repository/postgres"
-	"github.com/intexa/arca-api/internal/repository"
 )
 
 func main() {
@@ -101,56 +101,50 @@ func main() {
 
 			r.Post("/auth/logout", auth.Logout)
 
-			// Dashboard
+			// Read-only — all authenticated roles
 			r.Get("/dashboard", dashboard.GetSummary)
 			r.Get("/dashboard/bank-balance", dashboard.GetBankBalance)
-			r.Put("/dashboard/bank-balance", dashboard.UpdateBankBalance)
-
-			// Transactions
 			r.Get("/transactions", transactions.List)
-			r.Post("/transactions", transactions.Create)
 			r.Get("/transactions/summary", transactions.Summary)
 			r.Get("/transactions/{id}", transactions.Get)
-			r.Put("/transactions/{id}", transactions.Update)
-			r.Delete("/transactions/{id}", transactions.Delete)
-
-			// Cash flow
 			r.Get("/cashflow", cashflow.GetSummary)
-
-			// Projections
 			r.Get("/projections", projections.GetSummary)
-			r.Post("/projections", projections.Create)
 			r.Post("/projections/simulate", projections.Simulate)
-
-			// Reports
 			r.Get("/reports", reports.GetSummary)
 			r.Get("/reports/export", reports.Export)
-
-			// Users
-			r.Get("/users", users.List)
-			r.Post("/users", users.Create)
-			r.Put("/users/{id}", users.Update)
-			r.Delete("/users/{id}", users.Delete)
-
-			// Notifications
 			r.Get("/notifications", notifications.GetNotifications)
-
-			// Settings
 			r.Get("/settings", settings.Get)
 			r.Put("/settings", settings.Update)
 			r.Get("/exchange-rates", exchangeRates.GetRates)
 			r.Get("/categories", settings.GetCategories)
-			r.Get("/activity-logs", settings.GetActivityLogs)
-
-			// Siigo integration
-			r.Post("/siigo/connect", siigoH.Connect)
 			r.Get("/siigo/status", siigoH.Status)
-			r.Post("/siigo/sync", siigoH.Sync)
 
-			// Allowed domains (admin only)
-			r.Get("/allowed-domains", domains.List)
-			r.Post("/allowed-domains", domains.Add)
-			r.Delete("/allowed-domains/{domain}", domains.Remove)
+			// Write — ADMINISTRADOR + TESORERÍA
+			r.Group(func(r chi.Router) {
+				r.Use(middleware.RequireRole("ADMINISTRADOR", "TESORERÍA"))
+
+				r.Put("/dashboard/bank-balance", dashboard.UpdateBankBalance)
+				r.Post("/transactions", transactions.Create)
+				r.Put("/transactions/{id}", transactions.Update)
+				r.Delete("/transactions/{id}", transactions.Delete)
+				r.Post("/projections", projections.Create)
+				r.Post("/siigo/sync", siigoH.Sync)
+			})
+
+			// Admin only — ADMINISTRADOR
+			r.Group(func(r chi.Router) {
+				r.Use(middleware.RequireRole("ADMINISTRADOR"))
+
+				r.Get("/users", users.List)
+				r.Post("/users", users.Create)
+				r.Put("/users/{id}", users.Update)
+				r.Delete("/users/{id}", users.Delete)
+				r.Get("/activity-logs", settings.GetActivityLogs)
+				r.Post("/siigo/connect", siigoH.Connect)
+				r.Get("/allowed-domains", domains.List)
+				r.Post("/allowed-domains", domains.Add)
+				r.Delete("/allowed-domains/{domain}", domains.Remove)
+			})
 		})
 	})
 

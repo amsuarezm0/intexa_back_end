@@ -55,11 +55,17 @@ func (h *CashFlowHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// ── Projected balance = current balance ± pending transactions ────────
+	// ── Projected balance = current balance ± pending transactions within 30 days ──
 	balance := currentBalance(all)
+	horizon := now.AddDate(0, 0, 30)
 	var pendingInc, pendingExp float64
 	for _, t := range all {
 		if t.Status != domain.StatusPending || t.IsProjection {
+			continue
+		}
+		ty, tm, td := txDate(t)
+		tDate := time.Date(ty, tm, td, 0, 0, 0, 0, now.Location())
+		if tDate.After(horizon) {
 			continue
 		}
 		if t.Type == domain.TypeIngreso {

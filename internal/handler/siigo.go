@@ -15,10 +15,10 @@ import (
 
 const (
 	siigoPageSize     = 100
-	incrementalDays   = 3    // overlap window for incremental (days before lastSync)
-	schedulerHour     = 6    // daily sync fires at 06:00 local time
-	reconcileDay      = 1    // reconcile fires on the 1st of each month
-	bootstrapFallback = 730  // days back when no records exist (2 years)
+	incrementalDays   = 3   // overlap window for incremental (days before lastSync)
+	schedulerHour     = 6   // daily sync fires at 06:00 local time
+	reconcileDay      = 1   // reconcile fires on the 1st of each month
+	bootstrapFallback = 730 // days back when no records exist (2 years)
 )
 
 type SiigoHandler struct {
@@ -79,7 +79,7 @@ func (h *SiigoHandler) runScheduler() {
 			continue
 		}
 
-		result, err := h.runSync(client, mode, dateStart, dateEnd)
+		result, err := h.runSync(client, mode, dateStart, dateEnd, "Sistema", "SI")
 		if err != nil {
 			log.Printf("siigo scheduler: sync failed: %v", err)
 			continue
@@ -131,8 +131,9 @@ func (h *SiigoHandler) Connect(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "failed to save config", http.StatusInternalServerError)
 		return
 	}
+	actor, initial := actorFrom(r)
 	h.store.AddActivityLog(domain.ActivityLog{ //nolint
-		UserName: "Sistema", Initial: "SI", Action: "Conexión Siigo",
+		UserName: actor, Initial: initial, Action: "Conexión Siigo",
 		Module: "Integración", Color: "bg-green-500",
 	})
 	jsonOK(w, cfg)
@@ -182,7 +183,8 @@ func (h *SiigoHandler) Sync(w http.ResponseWriter, r *http.Request) {
 		dateEnd = req.DateEnd
 	}
 
-	result, err := h.runSync(client, req.Mode, dateStart, dateEnd)
+	actor, initial := actorFrom(r)
+	result, err := h.runSync(client, req.Mode, dateStart, dateEnd, actor, initial)
 	if err != nil {
 		jsonError(w, fmt.Sprintf("sync failed: %v", err), http.StatusBadGateway)
 		return
@@ -255,7 +257,7 @@ func (h *SiigoHandler) resolveDates(mode domain.SiigoSyncMode, requestedStart st
 }
 
 // runSync fetches all pages for the given window and upserts into the store.
-func (h *SiigoHandler) runSync(client *siigopkg.Client, mode domain.SiigoSyncMode, dateStart, dateEnd string) (*domain.SiigoSyncResult, error) {
+func (h *SiigoHandler) runSync(client *siigopkg.Client, mode domain.SiigoSyncMode, dateStart, dateEnd, actor, initial string) (*domain.SiigoSyncResult, error) {
 	result := &domain.SiigoSyncResult{Mode: mode, DateStart: dateStart, DateEnd: dateEnd}
 
 	if err := h.syncInvoices(client, dateStart, dateEnd, result); err != nil {
@@ -265,9 +267,9 @@ func (h *SiigoHandler) runSync(client *siigopkg.Client, mode domain.SiigoSyncMod
 		return nil, err
 	}
 
-	h.store.UpdateSiigoLastSync(time.Now()) //nolint
+	h.store.UpdateSiigoLastSync(time.Now())    //nolint
 	h.store.AddActivityLog(domain.ActivityLog{ //nolint
-		UserName: "Sistema", Initial: "SI",
+		UserName: actor, Initial: initial,
 		Action: fmt.Sprintf("Sync Siigo [%s] (+%d FV, +%d FC, ~%d actualizados)",
 			mode, result.InvoicesImported, result.PurchasesImported, result.Updated),
 		Module: "Integración", Color: "bg-green-500",
