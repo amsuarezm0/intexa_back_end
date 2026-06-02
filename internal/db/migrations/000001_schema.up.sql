@@ -170,15 +170,18 @@ CREATE TABLE IF NOT EXISTS transactions (
     id            UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
     date          DATE          NOT NULL,
     description   TEXT          NOT NULL,
+    detail        TEXT          NOT NULL,
     category      TEXT          NOT NULL,
     type          TEXT          NOT NULL CHECK (type IN ('Ingreso', 'Egreso')),
     amount        NUMERIC(18,2) NOT NULL,
+    balance       NUMERIC(18,2) NOT NULL DEFAULT 0,
     status        TEXT          NOT NULL DEFAULT 'Pendiente'
-                                CHECK (status IN ('Completado', 'Pendiente', 'Cancelado')),
+                                CHECK (status IN ('Completado', 'Pendiente', 'Cancelado', 'Parcial')),
     reference     TEXT,
     source        TEXT          NOT NULL DEFAULT 'Manual'
                                 CHECK (source IN ('Siigo', 'Manual')),
     external_id   TEXT          UNIQUE,   -- siigo-inv-{id} / siigo-pur-{id}
+    parent_id     UUID          REFERENCES transactions(id) ON DELETE CASCADE,
     is_projection BOOLEAN       NOT NULL DEFAULT false,
     created_by    UUID          REFERENCES users(id) ON DELETE SET NULL,
     created_at    TIMESTAMPTZ   NOT NULL DEFAULT now(),
