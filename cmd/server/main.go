@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -20,6 +21,10 @@ import (
 )
 
 func main() {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	})))
+
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
@@ -71,9 +76,9 @@ func main() {
 
 	// ── Router ────────────────────────────────────────────────────────────────
 	r := chi.NewRouter()
-	r.Use(chimiddleware.Logger)
-	r.Use(chimiddleware.Recoverer)
 	r.Use(chimiddleware.RequestID)
+	r.Use(chimiddleware.Recoverer)
+	r.Use(middleware.RequestLogger)
 	allowedOrigins := []string{"http://localhost:5173", "http://localhost:3000"}
 	if raw := os.Getenv("ALLOWED_ORIGINS"); raw != "" {
 		allowedOrigins = strings.Split(raw, ",")

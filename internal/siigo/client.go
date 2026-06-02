@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -106,14 +107,23 @@ func (c *Client) get(path string, out any) error {
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Partner-Id", c.partnerID)
 
+	start := time.Now()
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		slog.Error("siigo_request_failed", "path", path, "error", err)
 		return fmt.Errorf("siigo GET %s: %w", path, err)
 	}
 	defer resp.Body.Close()
 
+	slog.Info("siigo_request",
+		"path",       path,
+		"status",     resp.StatusCode,
+		"latency_ms", time.Since(start).Milliseconds(),
+	)
+
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(resp.Body)
+		slog.Warn("siigo_request_error", "path", path, "status", resp.StatusCode, "body", string(raw))
 		return fmt.Errorf("siigo GET %s error %d: %s", path, resp.StatusCode, string(raw))
 	}
 

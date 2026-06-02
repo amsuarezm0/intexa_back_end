@@ -3,6 +3,7 @@ package handler
 import (
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -81,11 +82,17 @@ func (h *SiigoHandler) runScheduler() {
 
 		result, err := h.runSync(client, mode, dateStart, dateEnd, "Sistema", "SI")
 		if err != nil {
-			log.Printf("siigo scheduler: sync failed: %v", err)
+			slog.Error("siigo_sync_failed", "mode", mode, "error", err)
 			continue
 		}
-		log.Printf("siigo scheduler: %s done — +%d FV, +%d FC, ~%d updated",
-			mode, result.InvoicesImported, result.PurchasesImported, result.Updated)
+		slog.Info("siigo_sync_done",
+			"mode",               mode,
+			"invoices_imported",  result.InvoicesImported,
+			"purchases_imported", result.PurchasesImported,
+			"updated",            result.Updated,
+			"date_start",         dateStart,
+			"date_end",           dateEnd,
+		)
 	}
 }
 
@@ -274,6 +281,15 @@ func (h *SiigoHandler) runSync(client *siigopkg.Client, mode domain.SiigoSyncMod
 			mode, result.InvoicesImported, result.PurchasesImported, result.Updated),
 		Module: "Integración", Color: "bg-green-500",
 	})
+	slog.Info("siigo_sync_complete",
+		"mode",               mode,
+		"actor",              actor,
+		"invoices_imported",  result.InvoicesImported,
+		"purchases_imported", result.PurchasesImported,
+		"updated",            result.Updated,
+		"date_start",         dateStart,
+		"date_end",           dateEnd,
+	)
 	return result, nil
 }
 

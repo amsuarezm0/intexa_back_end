@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -40,6 +41,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !ok || bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(req.Password)) != nil {
+		slog.Warn("login failed", "email", req.Email, "ip", r.RemoteAddr)
 		jsonError(w, "invalid credentials", http.StatusUnauthorized)
 		return
 	}
@@ -49,6 +51,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "could not generate token", http.StatusInternalServerError)
 		return
 	}
+	slog.Info("login", "email", user.Email, "role", user.Role, "ip", r.RemoteAddr)
 	jsonOK(w, map[string]any{"token": token, "user": user})
 }
 
@@ -128,6 +131,7 @@ func (h *AuthHandler) MicrosoftLogin(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "could not generate token", http.StatusInternalServerError)
 		return
 	}
+	slog.Info("login_microsoft", "email", user.Email, "role", user.Role, "oid", claims.OID)
 	jsonOK(w, map[string]any{"token": token, "user": user})
 }
 
