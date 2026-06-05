@@ -78,4 +78,6 @@ type Store interface {
 	GetBankBalance() (*domain.BankBalance, error)
 	SetBankBalance(b domain.BankBalance) error
 
+	// ── Search ────────────────────────────────────────────────────────────────
+	Search(reference string) ([]domain.SearchDocument, error)
 }

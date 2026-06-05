@@ -875,3 +875,7 @@ func (s *Store) UpsertPurchase(pur *domain.Purchase) (bool, error) {
 	s.purchases[pur.ID] = &cp
 	return true, nil
 }
+
+func (s *Store) Search(_ string) ([]domain.SearchDocument, error) {
+	return []domain.SearchDocument{}, nil
+}

@@ -96,7 +96,7 @@ CREATE TABLE IF NOT EXISTS invoices (
     due_date                DATE,
     customer_identification TEXT,
     customer_name           TEXT,
-    total                   NUMERIC(18,2) NOT NULL,
+    amount                  NUMERIC(18,2) NOT NULL DEFAULT 0,
     balance                 NUMERIC(18,2) NOT NULL DEFAULT 0,
     status                  TEXT          NOT NULL DEFAULT 'Pendiente'
                                           CHECK (status IN ('Completado', 'Pendiente', 'Anulado', 'Parcial')),
@@ -122,7 +122,7 @@ CREATE TABLE IF NOT EXISTS purchases (
     due_date                DATE,
     provider_identification TEXT,
     provider_name           TEXT,
-    total                   NUMERIC(18,2) NOT NULL,
+    amount                  NUMERIC(18,2) NOT NULL DEFAULT 0,
     balance                 NUMERIC(18,2) NOT NULL DEFAULT 0,
     status                  TEXT          NOT NULL DEFAULT 'Pendiente'
                                           CHECK (status IN ('Completado', 'Pendiente', 'Anulado', 'Parcial')),

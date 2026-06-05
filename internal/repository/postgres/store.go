@@ -119,9 +119,9 @@ func (s *Store) GetCurrentBalance() (float64, error) {
 			FROM   transactions
 			WHERE  status='Completado' AND is_projection=false
 			UNION ALL
-			SELECT total AS net FROM invoices  WHERE status='Completado'
+			SELECT amount AS net FROM invoices  WHERE status='Completado'
 			UNION ALL
-			SELECT -total AS net FROM purchases WHERE status='Completado'
+			SELECT -amount AS net FROM purchases WHERE status='Completado'
 		) sub`).Scan(&bal)
 	return bal, err
 }
@@ -141,10 +141,10 @@ func (s *Store) GetMonthlyTotals(from, to time.Time) ([]domain.MonthlyTotal, err
 			WHERE  status='Completado' AND is_projection=false AND type='Egreso'
 			  AND  date >= $1 AND date <= $2
 			UNION ALL
-			SELECT COALESCE(due_date, date), total AS income, 0 AS expense FROM invoices
+			SELECT COALESCE(due_date, date), amount AS income, 0 AS expense FROM invoices
 			WHERE  status='Completado' AND COALESCE(due_date, date) >= $1 AND COALESCE(due_date, date) <= $2
 			UNION ALL
-			SELECT COALESCE(due_date, date), 0 AS income, total AS expense FROM purchases
+			SELECT COALESCE(due_date, date), 0 AS income, amount AS expense FROM purchases
 			WHERE  status='Completado' AND COALESCE(due_date, date) >= $1 AND COALESCE(due_date, date) <= $2
 		) sub
 		GROUP  BY 1, 2
@@ -178,10 +178,10 @@ func (s *Store) GetDailyTotals(from, to time.Time) ([]domain.DailyTotal, error) 
 			WHERE  status='Completado' AND is_projection=false AND type='Egreso'
 			  AND  date >= $1 AND date <= $2
 			UNION ALL
-			SELECT COALESCE(due_date, date), total AS income, 0 AS expense FROM invoices
+			SELECT COALESCE(due_date, date), amount AS income, 0 AS expense FROM invoices
 			WHERE  status='Completado' AND COALESCE(due_date, date) >= $1 AND COALESCE(due_date, date) <= $2
 			UNION ALL
-			SELECT COALESCE(due_date, date), 0 AS income, total AS expense FROM purchases
+			SELECT COALESCE(due_date, date), 0 AS income, amount AS expense FROM purchases
 			WHERE  status='Completado' AND COALESCE(due_date, date) >= $1 AND COALESCE(due_date, date) <= $2
 		) sub
 		GROUP  BY date
@@ -242,7 +242,7 @@ func (s *Store) GetCategoryTotals(from, to time.Time, txType domain.TransactionT
 				WHERE  status='Completado' AND is_projection=false AND type='Ingreso'
 				  AND  date >= $1 AND date <= $2
 				UNION ALL
-				SELECT category, total FROM invoices
+				SELECT category, amount FROM invoices
 				WHERE  status='Completado' AND COALESCE(due_date, date) >= $1 AND COALESCE(due_date, date) <= $2
 			) sub
 			GROUP  BY category
@@ -255,7 +255,7 @@ func (s *Store) GetCategoryTotals(from, to time.Time, txType domain.TransactionT
 				WHERE  status='Completado' AND is_projection=false AND type='Egreso'
 				  AND  date >= $1 AND date <= $2
 				UNION ALL
-				SELECT category, total FROM purchases
+				SELECT category, amount FROM purchases
 				WHERE  status='Completado' AND COALESCE(due_date, date) >= $1 AND COALESCE(due_date, date) <= $2
 			) sub
 			GROUP  BY category
@@ -293,14 +293,14 @@ func (s *Store) GetWeeklyTotals(year int, month time.Month) ([]domain.WeeklyComp
 			  AND  EXTRACT(YEAR FROM date)::int = $1 AND EXTRACT(MONTH FROM date)::int = $2
 			UNION ALL
 			SELECT (EXTRACT(DAY FROM COALESCE(due_date, date))::int - 1) / 7 + 1 AS week,
-			       total AS income, 0 AS expense
+			       amount AS income, 0 AS expense
 			FROM   invoices
 			WHERE  status='Completado'
 			  AND  EXTRACT(YEAR FROM COALESCE(due_date, date))::int = $1
 			  AND  EXTRACT(MONTH FROM COALESCE(due_date, date))::int = $2
 			UNION ALL
 			SELECT (EXTRACT(DAY FROM COALESCE(due_date, date))::int - 1) / 7 + 1 AS week,
-			       0 AS income, total AS expense
+			       0 AS income, amount AS expense
 			FROM   purchases
 			WHERE  status='Completado'
 			  AND  EXTRACT(YEAR FROM COALESCE(due_date, date))::int = $1
@@ -729,7 +729,7 @@ const invoiceCols = `
 	id, external_id, source, is_projection,
 	COALESCE(reference,''), COALESCE(prefix,''), COALESCE(number,0), date::TEXT, COALESCE(due_date::TEXT,''),
 	COALESCE(customer_identification,''), COALESCE(customer_name,''),
-	total, balance, status, category, COALESCE(detail,''),
+	amount, balance, status, category, COALESCE(detail,''),
 	synced_at, created_at, updated_at`
 
 func (s *Store) GetAllInvoices() ([]*domain.Invoice, error) {
@@ -782,12 +782,12 @@ func (s *Store) UpsertInvoice(inv *domain.Invoice) (bool, error) {
 	err := s.pool.QueryRow(bg(), `
 		INSERT INTO invoices
 		  (id, external_id, source, is_projection, reference, prefix, number, date, due_date,
-		   customer_identification, customer_name, total, balance, status, category, detail, description, synced_at)
+		   customer_identification, customer_name, amount, balance, status, category, detail, description, synced_at)
 		VALUES ($1,$2,$3,$4,NULLIF($5,''),$6,$7,$8,$9,NULLIF($10,''),NULLIF($11,''),$12,$13,$14,$15,$16,NULLIF($5,''),now())
 		ON CONFLICT (external_id) DO UPDATE
 		  SET reference=NULLIF($5,''), date=$8, due_date=$9,
 		      customer_identification=NULLIF($10,''), customer_name=NULLIF($11,''),
-		      total=$12, balance=$13, status=$14, category=$15, detail=$16,
+		      amount=$12, balance=$13, status=$14, category=$15, detail=$16,
 		      description=NULLIF($5,''),
 		      synced_at=now(), updated_at=now()
 		RETURNING id, (xmax = 0) AS inserted, created_at, updated_at, synced_at`,
@@ -806,7 +806,7 @@ const purchaseCols = `
 	id, external_id, source, is_projection,
 	COALESCE(reference,''), COALESCE(prefix,''), COALESCE(number,0), date::TEXT, COALESCE(due_date::TEXT,''),
 	COALESCE(provider_identification,''), COALESCE(provider_name,''),
-	total, balance, status, category, COALESCE(detail,''),
+	amount, balance, status, category, COALESCE(detail,''),
 	synced_at, created_at, updated_at`
 
 func (s *Store) GetAllPurchases() ([]*domain.Purchase, error) {
@@ -859,12 +859,12 @@ func (s *Store) UpsertPurchase(pur *domain.Purchase) (bool, error) {
 	err := s.pool.QueryRow(bg(), `
 		INSERT INTO purchases
 		  (id, external_id, source, is_projection, reference, prefix, number, date, due_date,
-		   provider_identification, provider_name, total, balance, status, category, detail, description, synced_at)
+		   provider_identification, provider_name, amount, balance, status, category, detail, description, synced_at)
 		VALUES ($1,$2,$3,$4,NULLIF($5,''),$6,$7,$8,$9,NULLIF($10,''),NULLIF($11,''),$12,$13,$14,$15,$16,NULLIF($5,''),now())
 		ON CONFLICT (external_id) DO UPDATE
 		  SET reference=NULLIF($5,''), date=$8, due_date=$9,
 		      provider_identification=NULLIF($10,''), provider_name=NULLIF($11,''),
-		      total=$12, balance=$13, status=$14, category=$15, detail=$16,
+		      amount=$12, balance=$13, status=$14, category=$15, detail=$16,
 		      description=NULLIF($5,''),
 		      synced_at=now(), updated_at=now()
 		RETURNING id, (xmax = 0) AS inserted, created_at, updated_at, synced_at`,
@@ -979,6 +979,56 @@ func scanPurchases(rows pgx.Rows) ([]*domain.Purchase, error) {
 		list = append(list, pur)
 	}
 	return list, rows.Err()
+}
+
+// ── Search ────────────────────────────────────────────────────────────────────
+
+var prefixToTable = map[string]string{
+	"FV": "invoices",
+	"FC": "purchases",
+	"RC": "transactions",
+	"RP": "transactions",
+}
+
+func (s *Store) Search(reference string) ([]domain.SearchDocument, error) {
+	upper := strings.ToUpper(strings.TrimSpace(reference))
+	prefix := ""
+	if len(upper) >= 2 {
+		prefix = upper[:2]
+	}
+
+	table, ok := prefixToTable[prefix]
+	if !ok {
+		table = "transactions"
+	}
+
+	sql := fmt.Sprintf(
+		`SELECT id, COALESCE(reference,''), date::TEXT, COALESCE(description,''), amount, status, category
+		 FROM %s WHERE reference ILIKE $1 ORDER BY date DESC LIMIT 50`,
+		table,
+	)
+
+	rows, err := s.pool.Query(bg(), sql, "%"+reference+"%")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	docType := prefix
+	if !ok {
+		docType = "TX"
+	}
+
+	out := make([]domain.SearchDocument, 0)
+	for rows.Next() {
+		var d domain.SearchDocument
+		d.DocType = docType
+		if err := rows.Scan(&d.ID, &d.Reference, &d.Date, &d.Description, &d.Amount, &d.Status, &d.Category); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
 }
 
 // parseDate parses human-readable dates ("02 Jan, 2006") or ISO dates ("2006-01-02").

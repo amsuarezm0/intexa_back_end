@@ -297,6 +297,17 @@ type ActivityLog struct {
 	Color     string    `json:"color"`
 }
 
+type SearchDocument struct {
+	ID          string  `json:"id"`
+	DocType     string  `json:"docType"`
+	Reference   string  `json:"reference"`
+	Date        string  `json:"date"`
+	Description string  `json:"description"`
+	Amount      float64 `json:"amount"`
+	Status      string  `json:"status"`
+	Category    string  `json:"category"`
+}
+
 type LoginRequest struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`

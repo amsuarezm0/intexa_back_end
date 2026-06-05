@@ -68,6 +68,7 @@ func main() {
 	domains := handler.NewDomainsHandler(store)
 	exchangeRates := handler.NewExchangeRateHandler()
 	notifications := handler.NewNotificationsHandler(store)
+	search := handler.NewSearchHandler(store)
 
 	// ── Siigo auto-connect + scheduler ───────────────────────────────────────
 	if siigoUser := os.Getenv("SIIGO_USERNAME"); siigoUser != "" {
@@ -124,6 +125,7 @@ func main() {
 			r.Get("/reports", reports.GetSummary)
 			r.Get("/reports/export", reports.Export)
 			r.Get("/notifications", notifications.GetNotifications)
+			r.Get("/search", search.Search)
 			r.Get("/settings", settings.Get)
 			r.Put("/settings", settings.Update)
 			r.Get("/exchange-rates", exchangeRates.GetRates)
