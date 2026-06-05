@@ -2,6 +2,8 @@ DROP TABLE IF EXISTS activity_logs;
 DROP TABLE IF EXISTS bank_balance;
 DROP TABLE IF EXISTS settings;
 DROP TABLE IF EXISTS budget_lines;
+DROP TABLE IF EXISTS purchases;
+DROP TABLE IF EXISTS invoices;
 DROP TABLE IF EXISTS transactions;
 DROP TABLE IF EXISTS categories;
 DROP TABLE IF EXISTS siigo_configs;

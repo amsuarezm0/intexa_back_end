@@ -61,6 +61,8 @@ CREATE TABLE IF NOT EXISTS budget_lines (
     UNIQUE (category, year, month)
 );
 
+-- transactions: RC (vouchers) + RP (payment-receipts) + manual entries.
+-- Siigo invoices (FV) and purchases (FC) live in their own tables below.
 CREATE TABLE IF NOT EXISTS transactions (
     id            UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
     date          DATE          NOT NULL,
@@ -81,8 +83,56 @@ CREATE TABLE IF NOT EXISTS transactions (
     updated_at    TIMESTAMPTZ   NOT NULL DEFAULT now()
 );
 
+-- invoices: FV (facturas de venta) — cartera por cobrar, sincronizadas desde Siigo.
+CREATE TABLE IF NOT EXISTS invoices (
+    id                      UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
+    external_id             TEXT          UNIQUE NOT NULL,
+    source                  TEXT          NOT NULL DEFAULT 'Siigo'
+                                          CHECK (source IN ('Siigo')),
+    is_projection           BOOLEAN       NOT NULL DEFAULT false,
+    prefix                  TEXT,
+    number                  INTEGER,
+    date                    DATE          NOT NULL,
+    due_date                DATE,
+    customer_identification TEXT,
+    customer_name           TEXT,
+    total                   NUMERIC(18,2) NOT NULL,
+    balance                 NUMERIC(18,2) NOT NULL DEFAULT 0,
+    status                  TEXT          NOT NULL DEFAULT 'Pendiente'
+                                          CHECK (status IN ('Completado', 'Pendiente', 'Anulado', 'Parcial')),
+    category                TEXT          NOT NULL DEFAULT 'Operacional - Ventas',
+    detail                  TEXT          NOT NULL DEFAULT '',
+    synced_at               TIMESTAMPTZ   NOT NULL DEFAULT now(),
+    created_at              TIMESTAMPTZ   NOT NULL DEFAULT now(),
+    updated_at              TIMESTAMPTZ   NOT NULL DEFAULT now()
+);
+
+-- purchases: FC (facturas de compra) — cuentas por pagar, sincronizadas desde Siigo.
+CREATE TABLE IF NOT EXISTS purchases (
+    id                      UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
+    external_id             TEXT          UNIQUE NOT NULL,
+    source                  TEXT          NOT NULL DEFAULT 'Siigo'
+                                          CHECK (source IN ('Siigo')),
+    is_projection           BOOLEAN       NOT NULL DEFAULT false,
+    prefix                  TEXT,
+    number                  INTEGER,
+    date                    DATE          NOT NULL,
+    due_date                DATE,
+    provider_identification TEXT,
+    provider_name           TEXT,
+    total                   NUMERIC(18,2) NOT NULL,
+    balance                 NUMERIC(18,2) NOT NULL DEFAULT 0,
+    status                  TEXT          NOT NULL DEFAULT 'Pendiente'
+                                          CHECK (status IN ('Completado', 'Pendiente', 'Anulado', 'Parcial')),
+    category                TEXT          NOT NULL DEFAULT 'Gastos Operativos',
+    detail                  TEXT          NOT NULL DEFAULT '',
+    synced_at               TIMESTAMPTZ   NOT NULL DEFAULT now(),
+    created_at              TIMESTAMPTZ   NOT NULL DEFAULT now(),
+    updated_at              TIMESTAMPTZ   NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS bank_balance (
-    id         SERIAL      PRIMARY KEY,
+    id         SERIAL        PRIMARY KEY,
     amount     NUMERIC(18,2) NOT NULL DEFAULT 0,
     updated_by TEXT          NOT NULL DEFAULT '',
     updated_at TIMESTAMPTZ   NOT NULL DEFAULT now()
@@ -119,7 +169,16 @@ CREATE INDEX IF NOT EXISTS idx_transactions_status      ON transactions(status);
 CREATE INDEX IF NOT EXISTS idx_transactions_source      ON transactions(source);
 CREATE INDEX IF NOT EXISTS idx_transactions_external_id ON transactions(external_id);
 CREATE INDEX IF NOT EXISTS idx_transactions_category    ON transactions(category);
-CREATE INDEX IF NOT EXISTS idx_activity_logs_created    ON activity_logs(created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_invoices_date     ON invoices(date);
+CREATE INDEX IF NOT EXISTS idx_invoices_status   ON invoices(status);
+CREATE INDEX IF NOT EXISTS idx_invoices_customer ON invoices(customer_identification);
+
+CREATE INDEX IF NOT EXISTS idx_purchases_date     ON purchases(date);
+CREATE INDEX IF NOT EXISTS idx_purchases_status   ON purchases(status);
+CREATE INDEX IF NOT EXISTS idx_purchases_provider ON purchases(provider_identification);
+
+CREATE INDEX IF NOT EXISTS idx_activity_logs_created ON activity_logs(created_at DESC);
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Seed data
@@ -136,4 +195,3 @@ INSERT INTO categories (name, type) VALUES
     ('Marketing',              'expense'),
     ('Infraestructura',        'expense')
 ON CONFLICT (name) DO NOTHING;
-
