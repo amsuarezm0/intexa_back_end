@@ -30,6 +30,12 @@ func main() {
 		port = "8080"
 	}
 
+	jwtSecret := os.Getenv("JWT_SECRET")
+	if jwtSecret == "" {
+		log.Fatal("JWT_SECRET env var is required")
+	}
+	middleware.JWTSecret = []byte(jwtSecret)
+
 	// ── Store ─────────────────────────────────────────────────────────────────
 	var store repository.Store
 	dsn := os.Getenv("DATABASE_URL")

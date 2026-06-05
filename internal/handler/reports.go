@@ -104,7 +104,7 @@ func (h *ReportsHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 		}
 		pie = categoryBreakdownRange(all, time.Date(curY, 1, 1, 0, 0, 0, 0, now.Location()), now)
 		prevYearStart := time.Date(curY-1, 1, 1, 0, 0, 0, 0, now.Location())
-		prevYearEnd := time.Date(curY-1, curM, 1, 0, 0, 0, 0, now.Location())
+		prevYearEnd := now.AddDate(-1, 0, 0)
 		categoryTable = categoryComparisonTable(all,
 			time.Date(curY, 1, 1, 0, 0, 0, 0, now.Location()), now,
 			prevYearStart, prevYearEnd)
@@ -137,10 +137,12 @@ func (h *ReportsHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 				Egresos:  exp,
 			}
 		}
-		pie = categoryBreakdownRange(all, now.AddDate(0, -3, 0), now)
-		curMonthStart := time.Date(curY, curM, 1, 0, 0, 0, 0, now.Location())
-		prevMonthStart := curMonthStart.AddDate(0, -1, 0)
-		categoryTable = categoryComparisonTable(all, curMonthStart, now, prevMonthStart, curMonthStart)
+		sixMonthsAgo := now.AddDate(0, -5, 0)
+		sixMonthStart := time.Date(sixMonthsAgo.Year(), sixMonthsAgo.Month(), 1, 0, 0, 0, 0, now.Location())
+		prevSixMonthsAgo := now.AddDate(0, -11, 0)
+		prevSixMonthStart := time.Date(prevSixMonthsAgo.Year(), prevSixMonthsAgo.Month(), 1, 0, 0, 0, 0, now.Location())
+		pie = categoryBreakdownRange(all, sixMonthStart, now)
+		categoryTable = categoryComparisonTable(all, sixMonthStart, now, prevSixMonthStart, sixMonthStart)
 
 		var sumNet float64
 		for i := 1; i <= 3; i++ {
@@ -211,11 +213,17 @@ func categoryBreakdownRange(txs []*domain.Transaction, from, to time.Time) []dom
 	}
 	pie := []domain.PieSlice{}
 	for cat, v := range catMap {
-		pie = append(pie, domain.PieSlice{Name: cat, Value: pct(v, total)})
+		if p := pct(v, total); p > 0 {
+			pie = append(pie, domain.PieSlice{Name: cat, Value: p})
+		}
 	}
 	sort.Slice(pie, func(i, j int) bool { return pie[i].Value > pie[j].Value })
-	if len(pie) > 6 {
-		pie = pie[:6]
+	if len(pie) > 0 {
+		var sum float64
+		for _, s := range pie {
+			sum += s.Value
+		}
+		pie[0].Value = math.Round((pie[0].Value+(100-sum))*10) / 10
 	}
 	return pie
 }

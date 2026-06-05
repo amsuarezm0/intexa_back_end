@@ -36,7 +36,7 @@ type contextKey string
 
 const UserClaimsKey contextKey = "userClaims"
 
-var JWTSecret = []byte("intexa-arca-secret-change-in-prod")
+var JWTSecret []byte
 
 func Auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
