@@ -3,6 +3,7 @@ package siigo
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -10,6 +11,25 @@ import (
 	"sync"
 	"time"
 )
+
+// APIError is returned when Siigo responds with a non-200 status code.
+// Callers can inspect StatusCode to distinguish 4xx (logic errors) from
+// 5xx (Siigo-side bugs) and decide whether to abort or skip.
+type APIError struct {
+	StatusCode int
+	Body       string
+	Path       string
+}
+
+func (e *APIError) Error() string {
+	return fmt.Sprintf("siigo GET %s error %d: %s", e.Path, e.StatusCode, e.Body)
+}
+
+// IsServerError reports whether err is a Siigo 5xx APIError.
+func IsServerError(err error) bool {
+	var ae *APIError
+	return errors.As(err, &ae) && ae.StatusCode >= 500
+}
 
 const (
 	BaseURL            = "https://api.siigo.com"
@@ -151,7 +171,7 @@ func (c *Client) get(path string, out any) error {
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(resp.Body)
 		slog.Warn("siigo_request_error", "path", path, "status", resp.StatusCode, "body", string(raw))
-		return fmt.Errorf("siigo GET %s error %d: %s", path, resp.StatusCode, string(raw))
+		return &APIError{StatusCode: resp.StatusCode, Body: string(raw), Path: path}
 	}
 
 	return json.NewDecoder(resp.Body).Decode(out)

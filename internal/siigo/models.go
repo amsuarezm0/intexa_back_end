@@ -173,8 +173,13 @@ type VoucherCustomer struct {
 }
 
 type VoucherItem struct {
-	Description string  `json:"description"`
-	Total       float64 `json:"total"`
+	Description string         `json:"description"`
+	Value       float64        `json:"value"`
+	Account     VoucherAccount `json:"account"`
+}
+
+type VoucherAccount struct {
+	Movement string `json:"movement"` // "Debit" | "Credit"
 }
 
 // PaymentReceipt (RP — comprobante de egreso, pago real a proveedor)

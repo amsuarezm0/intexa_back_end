@@ -19,7 +19,7 @@ func NewNotificationsHandler(store repository.Store) *NotificationsHandler {
 
 // GET /api/v1/notifications
 func (h *NotificationsHandler) GetNotifications(w http.ResponseWriter, r *http.Request) {
-	all, err := h.store.GetAllTransactions()
+	pending, err := h.store.GetPendingTransactions()
 	if err != nil {
 		jsonError(w, "internal server error", http.StatusInternalServerError)
 		return
@@ -28,10 +28,7 @@ func (h *NotificationsHandler) GetNotifications(w http.ResponseWriter, r *http.R
 	now := time.Now()
 	var gastos, ingresos []domain.NotificationItem
 
-	for _, t := range all {
-		if t.Status != domain.StatusPending || t.IsProjection {
-			continue
-		}
+	for _, t := range pending {
 		d, err := time.Parse("2006-01-02", t.Date)
 		if err != nil {
 			d = t.CreatedAt
@@ -62,7 +59,6 @@ func (h *NotificationsHandler) GetNotifications(w http.ResponseWriter, r *http.R
 		}
 	}
 
-	// Sort: overdue first, then by amount desc within each urgency group
 	sortItems := func(items []domain.NotificationItem) {
 		sort.Slice(items, func(i, j int) bool {
 			ui, uj := urgencyRank(items[i].Urgency), urgencyRank(items[j].Urgency)

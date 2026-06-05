@@ -16,6 +16,15 @@ type Store interface {
 	UpdateTransaction(t *domain.Transaction) (bool, error)
 	DeleteTransaction(id string) (bool, error)
 
+	// ── Focused aggregation queries (DB does the work) ───────────────────────
+	GetCurrentBalance() (float64, error)
+	GetMonthlyTotals(from, to time.Time) ([]domain.MonthlyTotal, error)
+	GetDailyTotals(from, to time.Time) ([]domain.DailyTotal, error)
+	GetPendingTransactions() ([]*domain.Transaction, error)
+	GetPendingProjections(horizon time.Time) ([]*domain.Transaction, error)
+	GetCategoryTotals(from, to time.Time, txType domain.TransactionType) ([]domain.CategoryTotal, error)
+	GetWeeklyTotals(year int, month time.Month) ([]domain.WeeklyComparison, error)
+
 	// ── Users ────────────────────────────────────────────────────────────────
 	GetUserByEmail(email string) (*domain.User, bool, error)
 	GetUserByMicrosoftOID(oid string) (*domain.User, bool, error)
@@ -55,15 +64,18 @@ type Store interface {
 
 	// ── Invoices (FV — facturas de venta) ────────────────────────────────────────
 	GetAllInvoices() ([]*domain.Invoice, error)
+	GetPendingInvoices() ([]*domain.Invoice, error) // Pendiente + Parcial only
 	GetInvoiceByID(id string) (*domain.Invoice, bool, error)
 	UpsertInvoice(inv *domain.Invoice) (bool, error) // true = inserted
 
 	// ── Purchases (FC — facturas de compra) ──────────────────────────────────────
 	GetAllPurchases() ([]*domain.Purchase, error)
+	GetPendingPurchases() ([]*domain.Purchase, error) // Pendiente + Parcial only
 	GetPurchaseByID(id string) (*domain.Purchase, bool, error)
 	UpsertPurchase(pur *domain.Purchase) (bool, error) // true = inserted
 
 	// ── Bank balance ──────────────────────────────────────────────────────────
 	GetBankBalance() (*domain.BankBalance, error)
 	SetBankBalance(b domain.BankBalance) error
+
 }

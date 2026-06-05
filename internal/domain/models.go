@@ -46,6 +46,7 @@ type Invoice struct {
 	ExternalID             string            `json:"externalId"`
 	Source                 string            `json:"source"`
 	IsProjection           bool              `json:"isProjection"`
+	Reference              string            `json:"reference,omitempty"`
 	Prefix                 string            `json:"prefix,omitempty"`
 	Number                 int               `json:"number,omitempty"`
 	Date                   string            `json:"date"`
@@ -67,6 +68,7 @@ type Purchase struct {
 	ExternalID             string            `json:"externalId"`
 	Source                 string            `json:"source"`
 	IsProjection           bool              `json:"isProjection"`
+	Reference              string            `json:"reference,omitempty"`
 	Prefix                 string            `json:"prefix,omitempty"`
 	Number                 int               `json:"number,omitempty"`
 	Date                   string            `json:"date"`
@@ -327,6 +329,26 @@ type PurchaseListResponse struct {
 	Page       int        `json:"page"`
 	Limit      int        `json:"limit"`
 	TotalPages int        `json:"totalPages"`
+}
+
+// ── Aggregation result types (returned by focused DB queries) ─────────────────
+
+type MonthlyTotal struct {
+	Year    int
+	Month   time.Month
+	Income  float64
+	Expense float64
+}
+
+type DailyTotal struct {
+	Date     string // YYYY-MM-DD
+	Ingresos float64
+	Egresos  float64
+}
+
+type CategoryTotal struct {
+	Category string
+	Amount   float64
 }
 
 type TransactionSummary struct {

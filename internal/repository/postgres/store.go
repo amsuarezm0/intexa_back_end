@@ -4,6 +4,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -82,7 +83,7 @@ func (s *Store) ImportTransaction(t *domain.Transaction) (bool, error) {
 		  (id, date, description, category, type, amount, status, reference, detail, source, external_id, is_projection)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,NULLIF($8,''),$9,$10,NULLIF($11,''),$12)
 		ON CONFLICT (external_id) DO UPDATE
-		  SET date=$2, description=$3, category=$4, amount=$6, status=$7, detail=$9, updated_at=now()
+		  SET date=$2, description=$3, category=$4, amount=$6, status=$7, reference=NULLIF($8,''), detail=$9, updated_at=now()
 		RETURNING id, (xmax = 0) AS inserted, created_at, updated_at`,
 		newID, parseDate(t.Date), t.Description, t.Category, string(t.Type),
 		t.Amount, string(t.Status), t.Reference, t.Detail, string(t.Source),
@@ -106,6 +107,220 @@ func (s *Store) UpdateTransaction(t *domain.Transaction) (bool, error) {
 func (s *Store) DeleteTransaction(id string) (bool, error) {
 	tag, err := s.pool.Exec(bg(), `DELETE FROM transactions WHERE id=$1`, id)
 	return tag.RowsAffected() > 0, err
+}
+
+// ── Focused aggregation queries ───────────────────────────────────────────────
+
+func (s *Store) GetCurrentBalance() (float64, error) {
+	var bal float64
+	err := s.pool.QueryRow(bg(), `
+		SELECT COALESCE(SUM(net), 0) FROM (
+			SELECT CASE WHEN type='Ingreso' THEN amount ELSE -amount END AS net
+			FROM   transactions
+			WHERE  status='Completado' AND is_projection=false
+			UNION ALL
+			SELECT total AS net FROM invoices  WHERE status='Completado'
+			UNION ALL
+			SELECT -total AS net FROM purchases WHERE status='Completado'
+		) sub`).Scan(&bal)
+	return bal, err
+}
+
+func (s *Store) GetMonthlyTotals(from, to time.Time) ([]domain.MonthlyTotal, error) {
+	rows, err := s.pool.Query(bg(), `
+		SELECT EXTRACT(YEAR FROM date)::int,
+		       EXTRACT(MONTH FROM date)::int,
+		       COALESCE(SUM(income), 0),
+		       COALESCE(SUM(expense), 0)
+		FROM (
+			SELECT date, amount AS income, 0 AS expense FROM transactions
+			WHERE  status='Completado' AND is_projection=false AND type='Ingreso'
+			  AND  date >= $1 AND date <= $2
+			UNION ALL
+			SELECT date, 0 AS income, amount AS expense FROM transactions
+			WHERE  status='Completado' AND is_projection=false AND type='Egreso'
+			  AND  date >= $1 AND date <= $2
+			UNION ALL
+			SELECT COALESCE(due_date, date), total AS income, 0 AS expense FROM invoices
+			WHERE  status='Completado' AND COALESCE(due_date, date) >= $1 AND COALESCE(due_date, date) <= $2
+			UNION ALL
+			SELECT COALESCE(due_date, date), 0 AS income, total AS expense FROM purchases
+			WHERE  status='Completado' AND COALESCE(due_date, date) >= $1 AND COALESCE(due_date, date) <= $2
+		) sub
+		GROUP  BY 1, 2
+		ORDER  BY 1, 2`, from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]domain.MonthlyTotal, 0)
+	for rows.Next() {
+		var mt domain.MonthlyTotal
+		var month int
+		if err := rows.Scan(&mt.Year, &month, &mt.Income, &mt.Expense); err != nil {
+			return nil, err
+		}
+		mt.Month = time.Month(month)
+		out = append(out, mt)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) GetDailyTotals(from, to time.Time) ([]domain.DailyTotal, error) {
+	rows, err := s.pool.Query(bg(), `
+		SELECT date::TEXT, COALESCE(SUM(income), 0), COALESCE(SUM(expense), 0)
+		FROM (
+			SELECT date, amount AS income, 0 AS expense FROM transactions
+			WHERE  status='Completado' AND is_projection=false AND type='Ingreso'
+			  AND  date >= $1 AND date <= $2
+			UNION ALL
+			SELECT date, 0 AS income, amount AS expense FROM transactions
+			WHERE  status='Completado' AND is_projection=false AND type='Egreso'
+			  AND  date >= $1 AND date <= $2
+			UNION ALL
+			SELECT COALESCE(due_date, date), total AS income, 0 AS expense FROM invoices
+			WHERE  status='Completado' AND COALESCE(due_date, date) >= $1 AND COALESCE(due_date, date) <= $2
+			UNION ALL
+			SELECT COALESCE(due_date, date), 0 AS income, total AS expense FROM purchases
+			WHERE  status='Completado' AND COALESCE(due_date, date) >= $1 AND COALESCE(due_date, date) <= $2
+		) sub
+		GROUP  BY date
+		ORDER  BY date`, from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]domain.DailyTotal, 0)
+	for rows.Next() {
+		var dt domain.DailyTotal
+		if err := rows.Scan(&dt.Date, &dt.Ingresos, &dt.Egresos); err != nil {
+			return nil, err
+		}
+		out = append(out, dt)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) GetPendingTransactions() ([]*domain.Transaction, error) {
+	rows, err := s.pool.Query(bg(), `
+		SELECT id, date::TEXT, description, category, type, amount, status,
+		       COALESCE(reference,''), COALESCE(detail,''), source, COALESCE(external_id,''),
+		       is_projection, created_at, updated_at
+		FROM   transactions
+		WHERE  status='Pendiente' AND is_projection=false
+		ORDER  BY date ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanTransactions(rows)
+}
+
+func (s *Store) GetPendingProjections(horizon time.Time) ([]*domain.Transaction, error) {
+	rows, err := s.pool.Query(bg(), `
+		SELECT id, date::TEXT, description, category, type, amount, status,
+		       COALESCE(reference,''), COALESCE(detail,''), source, COALESCE(external_id,''),
+		       is_projection, created_at, updated_at
+		FROM   transactions
+		WHERE  is_projection=true AND status != 'Anulado' AND date <= $1
+		ORDER  BY date ASC`, horizon)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanTransactions(rows)
+}
+
+func (s *Store) GetCategoryTotals(from, to time.Time, txType domain.TransactionType) ([]domain.CategoryTotal, error) {
+	var rows pgx.Rows
+	var err error
+	if txType == domain.TypeIngreso {
+		rows, err = s.pool.Query(bg(), `
+			SELECT category, COALESCE(SUM(amount), 0)
+			FROM (
+				SELECT category, amount FROM transactions
+				WHERE  status='Completado' AND is_projection=false AND type='Ingreso'
+				  AND  date >= $1 AND date <= $2
+				UNION ALL
+				SELECT category, total FROM invoices
+				WHERE  status='Completado' AND COALESCE(due_date, date) >= $1 AND COALESCE(due_date, date) <= $2
+			) sub
+			GROUP  BY category
+			ORDER  BY 2 DESC`, from, to)
+	} else {
+		rows, err = s.pool.Query(bg(), `
+			SELECT category, COALESCE(SUM(amount), 0)
+			FROM (
+				SELECT category, amount FROM transactions
+				WHERE  status='Completado' AND is_projection=false AND type='Egreso'
+				  AND  date >= $1 AND date <= $2
+				UNION ALL
+				SELECT category, total FROM purchases
+				WHERE  status='Completado' AND COALESCE(due_date, date) >= $1 AND COALESCE(due_date, date) <= $2
+			) sub
+			GROUP  BY category
+			ORDER  BY 2 DESC`, from, to)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]domain.CategoryTotal, 0)
+	for rows.Next() {
+		var ct domain.CategoryTotal
+		if err := rows.Scan(&ct.Category, &ct.Amount); err != nil {
+			return nil, err
+		}
+		out = append(out, ct)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) GetWeeklyTotals(year int, month time.Month) ([]domain.WeeklyComparison, error) {
+	rows, err := s.pool.Query(bg(), `
+		SELECT week, COALESCE(SUM(income), 0), COALESCE(SUM(expense), 0)
+		FROM (
+			SELECT (EXTRACT(DAY FROM date)::int - 1) / 7 + 1 AS week,
+			       amount AS income, 0 AS expense
+			FROM   transactions
+			WHERE  status='Completado' AND is_projection=false AND type='Ingreso'
+			  AND  EXTRACT(YEAR FROM date)::int = $1 AND EXTRACT(MONTH FROM date)::int = $2
+			UNION ALL
+			SELECT (EXTRACT(DAY FROM date)::int - 1) / 7 + 1 AS week,
+			       0 AS income, amount AS expense
+			FROM   transactions
+			WHERE  status='Completado' AND is_projection=false AND type='Egreso'
+			  AND  EXTRACT(YEAR FROM date)::int = $1 AND EXTRACT(MONTH FROM date)::int = $2
+			UNION ALL
+			SELECT (EXTRACT(DAY FROM COALESCE(due_date, date))::int - 1) / 7 + 1 AS week,
+			       total AS income, 0 AS expense
+			FROM   invoices
+			WHERE  status='Completado'
+			  AND  EXTRACT(YEAR FROM COALESCE(due_date, date))::int = $1
+			  AND  EXTRACT(MONTH FROM COALESCE(due_date, date))::int = $2
+			UNION ALL
+			SELECT (EXTRACT(DAY FROM COALESCE(due_date, date))::int - 1) / 7 + 1 AS week,
+			       0 AS income, total AS expense
+			FROM   purchases
+			WHERE  status='Completado'
+			  AND  EXTRACT(YEAR FROM COALESCE(due_date, date))::int = $1
+			  AND  EXTRACT(MONTH FROM COALESCE(due_date, date))::int = $2
+		) sub
+		GROUP  BY week
+		ORDER  BY week`, year, int(month))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]domain.WeeklyComparison, 0)
+	for rows.Next() {
+		var wc domain.WeeklyComparison
+		if err := rows.Scan(&wc.Week, &wc.Ingresos, &wc.Egresos); err != nil {
+			return nil, err
+		}
+		out = append(out, wc)
+	}
+	return out, rows.Err()
 }
 
 // ── Users ─────────────────────────────────────────────────────────────────────
@@ -512,13 +727,22 @@ func (s *Store) SetBankBalance(b domain.BankBalance) error {
 
 const invoiceCols = `
 	id, external_id, source, is_projection,
-	COALESCE(prefix,''), COALESCE(number,0), date::TEXT, COALESCE(due_date::TEXT,''),
+	COALESCE(reference,''), COALESCE(prefix,''), COALESCE(number,0), date::TEXT, COALESCE(due_date::TEXT,''),
 	COALESCE(customer_identification,''), COALESCE(customer_name,''),
 	total, balance, status, category, COALESCE(detail,''),
 	synced_at, created_at, updated_at`
 
 func (s *Store) GetAllInvoices() ([]*domain.Invoice, error) {
-	rows, err := s.pool.Query(bg(), `SELECT`+invoiceCols+`FROM invoices ORDER BY date DESC`)
+	rows, err := s.pool.Query(bg(), `SELECT`+invoiceCols+` FROM invoices ORDER BY date DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanInvoices(rows)
+}
+
+func (s *Store) GetPendingInvoices() ([]*domain.Invoice, error) {
+	rows, err := s.pool.Query(bg(), `SELECT`+invoiceCols+` FROM invoices WHERE status IN ('Pendiente','Parcial') ORDER BY date DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -527,7 +751,7 @@ func (s *Store) GetAllInvoices() ([]*domain.Invoice, error) {
 }
 
 func (s *Store) GetInvoiceByID(id string) (*domain.Invoice, bool, error) {
-	row := s.pool.QueryRow(bg(), `SELECT`+invoiceCols+`FROM invoices WHERE id=$1`, id)
+	row := s.pool.QueryRow(bg(), `SELECT`+invoiceCols+` FROM invoices WHERE id=$1`, id)
 	inv, err := scanInvoice(row)
 	if err == pgx.ErrNoRows {
 		return nil, false, nil
@@ -551,19 +775,24 @@ func (s *Store) UpsertInvoice(inv *domain.Invoice) (bool, error) {
 	}
 	var actualID string
 	var inserted bool
+	ref := inv.Reference
+	if ref == "" && inv.Prefix != "" && inv.Number != 0 {
+		ref = inv.Prefix + "-" + fmt.Sprintf("%d", inv.Number)
+	}
 	err := s.pool.QueryRow(bg(), `
 		INSERT INTO invoices
-		  (id, external_id, source, is_projection, prefix, number, date, due_date,
-		   customer_identification, customer_name, total, balance, status, category, detail, synced_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NULLIF($9,''),NULLIF($10,''),$11,$12,$13,$14,$15,now())
+		  (id, external_id, source, is_projection, reference, prefix, number, date, due_date,
+		   customer_identification, customer_name, total, balance, status, category, detail, description, synced_at)
+		VALUES ($1,$2,$3,$4,NULLIF($5,''),$6,$7,$8,$9,NULLIF($10,''),NULLIF($11,''),$12,$13,$14,$15,$16,NULLIF($5,''),now())
 		ON CONFLICT (external_id) DO UPDATE
-		  SET date=$7, due_date=$8,
-		      customer_identification=NULLIF($9,''), customer_name=NULLIF($10,''),
-		      total=$11, balance=$12, status=$13, category=$14, detail=$15,
+		  SET reference=NULLIF($5,''), date=$8, due_date=$9,
+		      customer_identification=NULLIF($10,''), customer_name=NULLIF($11,''),
+		      total=$12, balance=$13, status=$14, category=$15, detail=$16,
+		      description=NULLIF($5,''),
 		      synced_at=now(), updated_at=now()
 		RETURNING id, (xmax = 0) AS inserted, created_at, updated_at, synced_at`,
 		newID, inv.ExternalID, inv.Source, inv.IsProjection,
-		prefix, number, parseDate(inv.Date), dueDate,
+		ref, prefix, number, parseDate(inv.Date), dueDate,
 		inv.CustomerIdentification, inv.CustomerName,
 		inv.Total, inv.Balance, string(inv.Status), inv.Category, inv.Detail,
 	).Scan(&actualID, &inserted, &inv.CreatedAt, &inv.UpdatedAt, &inv.SyncedAt)
@@ -575,13 +804,22 @@ func (s *Store) UpsertInvoice(inv *domain.Invoice) (bool, error) {
 
 const purchaseCols = `
 	id, external_id, source, is_projection,
-	COALESCE(prefix,''), COALESCE(number,0), date::TEXT, COALESCE(due_date::TEXT,''),
+	COALESCE(reference,''), COALESCE(prefix,''), COALESCE(number,0), date::TEXT, COALESCE(due_date::TEXT,''),
 	COALESCE(provider_identification,''), COALESCE(provider_name,''),
 	total, balance, status, category, COALESCE(detail,''),
 	synced_at, created_at, updated_at`
 
 func (s *Store) GetAllPurchases() ([]*domain.Purchase, error) {
-	rows, err := s.pool.Query(bg(), `SELECT`+purchaseCols+`FROM purchases ORDER BY date DESC`)
+	rows, err := s.pool.Query(bg(), `SELECT`+purchaseCols+` FROM purchases ORDER BY date DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanPurchases(rows)
+}
+
+func (s *Store) GetPendingPurchases() ([]*domain.Purchase, error) {
+	rows, err := s.pool.Query(bg(), `SELECT`+purchaseCols+` FROM purchases WHERE status IN ('Pendiente','Parcial') ORDER BY date DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -590,7 +828,7 @@ func (s *Store) GetAllPurchases() ([]*domain.Purchase, error) {
 }
 
 func (s *Store) GetPurchaseByID(id string) (*domain.Purchase, bool, error) {
-	row := s.pool.QueryRow(bg(), `SELECT`+purchaseCols+`FROM purchases WHERE id=$1`, id)
+	row := s.pool.QueryRow(bg(), `SELECT`+purchaseCols+` FROM purchases WHERE id=$1`, id)
 	pur, err := scanPurchase(row)
 	if err == pgx.ErrNoRows {
 		return nil, false, nil
@@ -614,19 +852,24 @@ func (s *Store) UpsertPurchase(pur *domain.Purchase) (bool, error) {
 	}
 	var actualID string
 	var inserted bool
+	ref := pur.Reference
+	if ref == "" && pur.Prefix != "" && pur.Number != 0 {
+		ref = pur.Prefix + "-" + fmt.Sprintf("%d", pur.Number)
+	}
 	err := s.pool.QueryRow(bg(), `
 		INSERT INTO purchases
-		  (id, external_id, source, is_projection, prefix, number, date, due_date,
-		   provider_identification, provider_name, total, balance, status, category, detail, synced_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NULLIF($9,''),NULLIF($10,''),$11,$12,$13,$14,$15,now())
+		  (id, external_id, source, is_projection, reference, prefix, number, date, due_date,
+		   provider_identification, provider_name, total, balance, status, category, detail, description, synced_at)
+		VALUES ($1,$2,$3,$4,NULLIF($5,''),$6,$7,$8,$9,NULLIF($10,''),NULLIF($11,''),$12,$13,$14,$15,$16,NULLIF($5,''),now())
 		ON CONFLICT (external_id) DO UPDATE
-		  SET date=$7, due_date=$8,
-		      provider_identification=NULLIF($9,''), provider_name=NULLIF($10,''),
-		      total=$11, balance=$12, status=$13, category=$14, detail=$15,
+		  SET reference=NULLIF($5,''), date=$8, due_date=$9,
+		      provider_identification=NULLIF($10,''), provider_name=NULLIF($11,''),
+		      total=$12, balance=$13, status=$14, category=$15, detail=$16,
+		      description=NULLIF($5,''),
 		      synced_at=now(), updated_at=now()
 		RETURNING id, (xmax = 0) AS inserted, created_at, updated_at, synced_at`,
 		newID, pur.ExternalID, pur.Source, pur.IsProjection,
-		prefix, number, parseDate(pur.Date), dueDate,
+		ref, prefix, number, parseDate(pur.Date), dueDate,
 		pur.ProviderIdentification, pur.ProviderName,
 		pur.Total, pur.Balance, string(pur.Status), pur.Category, pur.Detail,
 	).Scan(&actualID, &inserted, &pur.CreatedAt, &pur.UpdatedAt, &pur.SyncedAt)
@@ -685,7 +928,7 @@ func scanInvoice(row scanner) (*domain.Invoice, error) {
 	var status string
 	err := row.Scan(
 		&inv.ID, &inv.ExternalID, &inv.Source, &inv.IsProjection,
-		&inv.Prefix, &inv.Number, &inv.Date, &inv.DueDate,
+		&inv.Reference, &inv.Prefix, &inv.Number, &inv.Date, &inv.DueDate,
 		&inv.CustomerIdentification, &inv.CustomerName,
 		&inv.Total, &inv.Balance, &status, &inv.Category, &inv.Detail,
 		&inv.SyncedAt, &inv.CreatedAt, &inv.UpdatedAt,
@@ -714,7 +957,7 @@ func scanPurchase(row scanner) (*domain.Purchase, error) {
 	var status string
 	err := row.Scan(
 		&pur.ID, &pur.ExternalID, &pur.Source, &pur.IsProjection,
-		&pur.Prefix, &pur.Number, &pur.Date, &pur.DueDate,
+		&pur.Reference, &pur.Prefix, &pur.Number, &pur.Date, &pur.DueDate,
 		&pur.ProviderIdentification, &pur.ProviderName,
 		&pur.Total, &pur.Balance, &status, &pur.Category, &pur.Detail,
 		&pur.SyncedAt, &pur.CreatedAt, &pur.UpdatedAt,

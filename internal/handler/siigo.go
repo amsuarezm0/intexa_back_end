@@ -300,6 +300,10 @@ func (h *SiigoHandler) syncInvoices(client *siigopkg.Client, dateStart, dateEnd 
 	for page := 1; ; page++ {
 		resp, err := client.GetInvoices(dateStart, dateEnd, page, siigoPageSize)
 		if err != nil {
+			if siigopkg.IsServerError(err) {
+				slog.Warn("siigo_server_error_skip", "resource", "invoices", "page", page, "error", err)
+				break
+			}
 			return fmt.Errorf("fetching invoices page %d: %w", page, err)
 		}
 		for _, inv := range resp.Results {
@@ -321,9 +325,9 @@ func (h *SiigoHandler) syncInvoices(client *siigopkg.Client, dateStart, dateEnd 
 				Prefix:                 inv.Prefix,
 				Number:                 inv.Number,
 				Date:                   inv.Date,
-				DueDate:                inv.DueDate,
+				DueDate:                firstNonEmpty(inv.DueDate, firstPaymentDueDate(inv.Payments)),
 				CustomerIdentification: inv.Customer.Identification,
-				CustomerName:           inv.Customer.Name,
+				CustomerName:           firstNonEmpty(inv.Customer.Name, inv.Customer.CommercialName),
 				Total:                  inv.Total,
 				Balance:                inv.Balance,
 				Status:                 invoiceStatus(inv.Balance, inv.Total),
@@ -351,6 +355,10 @@ func (h *SiigoHandler) syncPurchases(client *siigopkg.Client, dateStart, dateEnd
 	for page := 1; ; page++ {
 		resp, err := client.GetPurchases(dateStart, dateEnd, page, siigoPageSize)
 		if err != nil {
+			if siigopkg.IsServerError(err) {
+				slog.Warn("siigo_server_error_skip", "resource", "purchases", "page", page, "error", err)
+				break
+			}
 			return fmt.Errorf("fetching purchases page %d: %w", page, err)
 		}
 		for _, pur := range resp.Results {
@@ -372,9 +380,9 @@ func (h *SiigoHandler) syncPurchases(client *siigopkg.Client, dateStart, dateEnd
 				Prefix:                 pur.Prefix,
 				Number:                 pur.Number,
 				Date:                   pur.Date,
-				DueDate:                pur.DueDate,
+				DueDate:                firstNonEmpty(pur.DueDate, firstPaymentDueDate(pur.Payments)),
 				ProviderIdentification: pur.Provider.Identification,
-				ProviderName:           pur.Provider.Name,
+				ProviderName:           firstNonEmpty(pur.Provider.Name, pur.Provider.CommercialName),
 				Total:                  pur.Total,
 				Balance:                pur.Balance,
 				Status:                 invoiceStatus(pur.Balance, pur.Total),
@@ -402,6 +410,10 @@ func (h *SiigoHandler) syncVouchers(client *siigopkg.Client, dateStart, dateEnd 
 	for page := 1; ; page++ {
 		resp, err := client.GetVouchers(dateStart, dateEnd, page, siigoPageSize)
 		if err != nil {
+			if siigopkg.IsServerError(err) {
+				slog.Warn("siigo_server_error_skip", "resource", "vouchers", "page", page, "error", err)
+				break
+			}
 			return fmt.Errorf("fetching vouchers page %d: %w", page, err)
 		}
 		for _, v := range resp.Results {
@@ -421,9 +433,10 @@ func (h *SiigoHandler) syncVouchers(client *siigopkg.Client, dateStart, dateEnd 
 			t := &domain.Transaction{
 				Date:        v.Date,
 				Description: desc,
+				Reference:   siigoRef(v.Prefix, v.Number),
 				Category:    categorizeInvoice(itemDescs, v.Customer.Name),
 				Type:        domain.TypeIngreso,
-				Amount:      v.Total,
+				Amount:      voucherTotal(v.Total, v.Items, "Debit"),
 				Status:      domain.StatusCompleted,
 				Detail:      desc + ifNonEmpty(" · ", strings.Join(itemDescs, " | ")),
 				Source:      domain.SourceSIIGO,
@@ -451,6 +464,10 @@ func (h *SiigoHandler) syncPaymentReceipts(client *siigopkg.Client, dateStart, d
 	for page := 1; ; page++ {
 		resp, err := client.GetPaymentReceipts(dateStart, dateEnd, page, siigoPageSize)
 		if err != nil {
+			if siigopkg.IsServerError(err) {
+				slog.Warn("siigo_server_error_skip", "resource", "payment_receipts", "page", page, "error", err)
+				break
+			}
 			return fmt.Errorf("fetching payment receipts page %d: %w", page, err)
 		}
 		for _, pr := range resp.Results {
@@ -470,9 +487,10 @@ func (h *SiigoHandler) syncPaymentReceipts(client *siigopkg.Client, dateStart, d
 			t := &domain.Transaction{
 				Date:        pr.Date,
 				Description: desc,
+				Reference:   siigoRef(pr.Prefix, pr.Number),
 				Category:    categorizePurchase(itemDescs, pr.Provider.Name),
 				Type:        domain.TypeEgreso,
-				Amount:      pr.Total,
+				Amount:      voucherTotal(pr.Total, pr.Items, "Credit"),
 				Status:      domain.StatusCompleted,
 				Detail:      desc + ifNonEmpty(" · ", strings.Join(itemDescs, " | ")),
 				Source:      domain.SourceSIIGO,
@@ -497,6 +515,39 @@ func (h *SiigoHandler) syncPaymentReceipts(client *siigopkg.Client, dateStart, d
 }
 
 // ifNonEmpty returns prefix+s when s is non-empty, empty string otherwise.
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// voucherTotal sums items whose account.movement matches the given side.
+// Falls back to the top-level total only when no items match.
+func voucherTotal(total float64, items []siigopkg.VoucherItem, movement string) float64 {
+	var sum float64
+	for _, it := range items {
+		if it.Account.Movement == movement {
+			sum += it.Value
+		}
+	}
+	if sum != 0 {
+		return sum
+	}
+	return total
+}
+
+func firstPaymentDueDate(payments []siigopkg.PaymentTerm) string {
+	for _, p := range payments {
+		if p.DueDate != "" {
+			return p.DueDate
+		}
+	}
+	return ""
+}
+
 func ifNonEmpty(prefix, s string) string {
 	if s == "" {
 		return ""

@@ -2,6 +2,7 @@ package handler
 
 import (
 	"fmt"
+	"log/slog"
 	"math"
 	"net/http"
 	"sort"
@@ -28,24 +29,33 @@ func (h *ProjectionsHandler) GetSummary(w http.ResponseWriter, r *http.Request) 
 		days = 90
 	}
 
-	all, err := h.store.GetAllTransactions()
-	if err != nil {
-		jsonError(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-	invoices, err := h.store.GetAllInvoices()
-	if err != nil {
-		jsonError(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-	purchases, err := h.store.GetAllPurchases()
-	if err != nil {
-		jsonError(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-
 	now := time.Now().Truncate(24 * time.Hour)
-	balance := currentBalance(all)
+	horizon := now.AddDate(0, 0, days)
+
+	balance, err := h.store.GetCurrentBalance()
+	if err != nil {
+		slog.Error("projections/GetSummary: GetCurrentBalance", "err", err)
+		jsonError(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	invoices, err := h.store.GetPendingInvoices()
+	if err != nil {
+		slog.Error("projections/GetSummary: GetPendingInvoices", "err", err)
+		jsonError(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	purchases, err := h.store.GetPendingPurchases()
+	if err != nil {
+		slog.Error("projections/GetSummary: GetPendingPurchases", "err", err)
+		jsonError(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	all, err := h.store.GetPendingProjections(horizon)
+	if err != nil {
+		slog.Error("projections/GetSummary: GetPendingProjections", "err", err)
+		jsonError(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
 
 	dailyNet := map[int]float64{}
 	var projInc, projExp float64
@@ -281,41 +291,34 @@ func (h *ProjectionsHandler) Simulate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	all, err := h.store.GetAllTransactions()
+	base, err := h.store.GetCurrentBalance()
 	if err != nil {
 		jsonError(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	invoices, err := h.store.GetAllInvoices()
+	invoices, err := h.store.GetPendingInvoices()
 	if err != nil {
 		jsonError(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	purchases, err := h.store.GetAllPurchases()
+	purchases, err := h.store.GetPendingPurchases()
+	if err != nil {
+		jsonError(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	projections, err := h.store.GetPendingProjections(time.Now().AddDate(1, 0, 0))
 	if err != nil {
 		jsonError(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
-	base := currentBalance(all)
-
-	// Add pending invoice/purchase balances.
 	for _, inv := range invoices {
-		if inv.Status != domain.StatusCompleted && inv.Status != domain.StatusCancelled {
-			base += inv.Balance
-		}
+		base += inv.Balance
 	}
 	for _, pur := range purchases {
-		if pur.Status != domain.StatusCompleted && pur.Status != domain.StatusCancelled {
-			base -= pur.Balance
-		}
+		base -= pur.Balance
 	}
-
-	// Add manual projections in transactions.
-	for _, t := range all {
-		if !t.IsProjection || t.Status == domain.StatusCancelled {
-			continue
-		}
+	for _, t := range projections {
 		if t.Type == domain.TypeIngreso {
 			base += t.Amount
 		} else {

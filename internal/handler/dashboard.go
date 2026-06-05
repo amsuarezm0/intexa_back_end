@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"fmt"
 	"net/http"
 	"sort"
 	"time"
@@ -18,19 +19,50 @@ func NewDashboardHandler(store repository.Store) *DashboardHandler {
 }
 
 func (h *DashboardHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
-	all, err := h.store.GetAllTransactions()
+	now := time.Now()
+	y, m, _ := now.Date()
+	firstOfMonth := time.Date(y, m, 1, 0, 0, 0, 0, now.Location())
+	prevMonthStart := firstOfMonth.AddDate(0, -1, 0)
+
+	// 7 months of monthly totals for chart + stats
+	sevenMonthsAgo := time.Date(y, m, 1, 0, 0, 0, 0, now.Location()).AddDate(0, -6, 0)
+	monthly, err := h.store.GetMonthlyTotals(sevenMonthsAgo, now)
 	if err != nil {
 		jsonError(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	now := time.Now()
-	y, m, _ := now.Date()
+	// Expense categories for current month
+	catTotals, err := h.store.GetCategoryTotals(firstOfMonth, now, domain.TypeEgreso)
+	if err != nil {
+		jsonError(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	// Weekly breakdown for current month
+	weeklyData, err := h.store.GetWeeklyTotals(y, m)
+	if err != nil {
+		jsonError(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	// Pending manual transactions for alerts
+	pending, err := h.store.GetPendingTransactions()
+	if err != nil {
+		jsonError(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
 
-	monthInc, monthExp := monthlyTotals(all, y, m)
-	balance := monthInc - monthExp
+	// Index monthly totals by year+month for O(1) lookup
+	type mk struct{ y int; m time.Month }
+	mIdx := make(map[mk]domain.MonthlyTotal, len(monthly))
+	for _, mt := range monthly {
+		mIdx[mk{mt.Year, mt.Month}] = mt
+	}
+	lookup := func(yr int, mo time.Month) (float64, float64) {
+		mt := mIdx[mk{yr, mo}]
+		return mt.Income, mt.Expense
+	}
 
-	prevY, prevM, _ := now.AddDate(0, -1, 0).Date()
-	prevInc, prevExp := monthlyTotals(all, prevY, prevM)
+	monthInc, monthExp := lookup(y, m)
+	prevInc, prevExp := lookup(prevMonthStart.Year(), prevMonthStart.Month())
 
 	balChange := signedPct(monthInc-monthExp, prevInc-prevExp)
 	incChange := signedPct(monthInc, prevInc)
@@ -45,7 +77,7 @@ func (h *DashboardHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 
 	stats := []domain.StatCard{
 		{
-			Title: "SALDO ACTUAL", Value: balance,
+			Title: "SALDO ACTUAL", Value: monthInc - monthExp,
 			Change: balChange, IsPositive: monthInc >= monthExp,
 			TrendText: trendLabel(balChange), Icon: "Building2",
 		},
@@ -61,12 +93,11 @@ func (h *DashboardHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	// Chart: last 7 months — anchor to 1st to avoid day-overflow (e.g. May 29 - 3mo = Feb 29 → Mar 1 in non-leap years)
+	// Chart: last 7 months
 	chartData := make([]domain.ChartDataPoint, 7)
-	firstOfMonth := time.Date(y, m, 1, 0, 0, 0, 0, now.Location())
 	for i := 0; i < 7; i++ {
-		t := firstOfMonth.AddDate(0, -(6 - i), 0)
-		inc, exp := monthlyTotals(all, t.Year(), t.Month())
+		t := sevenMonthsAgo.AddDate(0, i, 0)
+		inc, exp := lookup(t.Year(), t.Month())
 		chartData[i] = domain.ChartDataPoint{
 			Name:     spanishMonths[t.Month()],
 			Ingresos: inc,
@@ -75,59 +106,27 @@ func (h *DashboardHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Expense pie: top 5 categories by % of total egresos
-	catMap := expenseByCategory(all)
+	// Expense pie: top 5 categories by % of total (current month)
 	var totalExp float64
-	for _, v := range catMap {
-		totalExp += v
+	for _, ct := range catTotals {
+		totalExp += ct.Amount
 	}
-	pie := []domain.PieSlice{}
-	for cat, v := range catMap {
-		pie = append(pie, domain.PieSlice{Name: cat, Value: pct(v, totalExp)})
+	pie := make([]domain.PieSlice, 0, len(catTotals))
+	for _, ct := range catTotals {
+		pie = append(pie, domain.PieSlice{Name: ct.Category, Value: pct(ct.Amount, totalExp)})
 	}
-	sort.Slice(pie, func(i, j int) bool { return pie[i].Value > pie[j].Value })
 	if len(pie) > 5 {
 		pie = pie[:5]
 	}
 
-	// Weekly breakdown for the current month (cash basis)
-	weekMap := map[int]*domain.WeeklyComparison{}
-	for _, t := range all {
-		if t.IsProjection || t.Status == domain.StatusCancelled {
-			continue
-		}
-		r := receivedAmount(t)
-		if r == 0 {
-			continue
-		}
-		ty, tm, td := txDate(t)
-		if ty != y || tm != m {
-			continue
-		}
-		week := (td-1)/7 + 1
-		if weekMap[week] == nil {
-			weekMap[week] = &domain.WeeklyComparison{Week: week}
-		}
-		if t.Type == domain.TypeIngreso {
-			weekMap[week].Ingresos += r
-		} else {
-			weekMap[week].Egresos += r
-		}
-	}
-	weeklyData := []domain.WeeklyComparison{}
-	for _, wc := range weekMap {
-		weeklyData = append(weeklyData, *wc)
-	}
-	sort.Slice(weeklyData, func(i, j int) bool { return weeklyData[i].Week < weeklyData[j].Week })
-
-	alerts := pendingAlerts(all, now, 5, 4)
-	// Prepend a synthetic balance alert when negative
-	if balance < 0 {
+	// Alerts from pending manual transactions (overdue >= 5 days)
+	alerts := buildPendingAlerts(pending, now, 5, 4)
+	if monthInc-monthExp < 0 {
 		alerts = append([]domain.Alert{{
 			ID: "balance-warning", Type: "danger",
 			Title:       "Saldo Negativo",
 			Description: "El saldo actual es negativo. Revise los egresos pendientes.",
-			Amount:      -balance,
+			Amount:      -(monthInc - monthExp),
 		}}, alerts...)
 	}
 
@@ -143,6 +142,39 @@ func (h *DashboardHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// buildPendingAlerts builds Alert items from pending (non-projection) transactions
+// that are >= minAgeDays overdue.
+func buildPendingAlerts(pending []*domain.Transaction, now time.Time, minAgeDays, maxCount int) []domain.Alert {
+	alerts := []domain.Alert{}
+	for _, t := range pending {
+		d, err := time.Parse("2006-01-02", t.Date)
+		if err != nil {
+			d = t.CreatedAt
+		}
+		ageDays := int(now.Sub(d).Hours() / 24)
+		if ageDays < minAgeDays {
+			continue
+		}
+		kind := "warning"
+		if ageDays > 10 {
+			kind = "danger"
+		}
+		alerts = append(alerts, domain.Alert{
+			ID:          t.ID,
+			Type:        kind,
+			Title:       t.Description,
+			Description: fmt.Sprintf("Pendiente hace %d días · %s", ageDays, t.Category),
+			Amount:      t.Amount,
+			DueDate:     t.Date,
+		})
+	}
+	sort.Slice(alerts, func(i, j int) bool { return alerts[i].Amount > alerts[j].Amount })
+	if len(alerts) > maxCount {
+		return alerts[:maxCount]
+	}
+	return alerts
+}
+
 // GET /api/v1/dashboard/bank-balance
 func (h *DashboardHandler) GetBankBalance(w http.ResponseWriter, r *http.Request) {
 	b, err := h.store.GetBankBalance()
@@ -150,7 +182,7 @@ func (h *DashboardHandler) GetBankBalance(w http.ResponseWriter, r *http.Request
 		jsonError(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	jsonOK(w, b) // nil serialises as JSON null → frontend shows '—'
+	jsonOK(w, b)
 }
 
 // PUT /api/v1/dashboard/bank-balance

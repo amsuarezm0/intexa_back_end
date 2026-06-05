@@ -3,6 +3,7 @@ package memory
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -252,6 +253,189 @@ func (s *Store) DeleteTransaction(id string) (bool, error) {
 	}
 	delete(s.transactions, id)
 	return true, nil
+}
+
+// ── Focused aggregation queries ───────────────────────────────────────────────
+
+func (s *Store) GetCurrentBalance() (float64, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var bal float64
+	for _, t := range s.transactions {
+		if t.IsProjection || t.Status != domain.StatusCompleted {
+			continue
+		}
+		if t.Type == domain.TypeIngreso {
+			bal += t.Amount
+		} else {
+			bal -= t.Amount
+		}
+	}
+	return bal, nil
+}
+
+func (s *Store) GetMonthlyTotals(from, to time.Time) ([]domain.MonthlyTotal, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	type key struct{ y, m int }
+	agg := map[key]*domain.MonthlyTotal{}
+	for _, t := range s.transactions {
+		if t.IsProjection || t.Status != domain.StatusCompleted {
+			continue
+		}
+		d, err := time.ParseInLocation("2006-01-02", t.Date, time.Local)
+		if err != nil {
+			continue
+		}
+		if d.Before(from) || d.After(to) {
+			continue
+		}
+		k := key{d.Year(), int(d.Month())}
+		if agg[k] == nil {
+			agg[k] = &domain.MonthlyTotal{Year: d.Year(), Month: d.Month()}
+		}
+		if t.Type == domain.TypeIngreso {
+			agg[k].Income += t.Amount
+		} else {
+			agg[k].Expense += t.Amount
+		}
+	}
+	out := make([]domain.MonthlyTotal, 0, len(agg))
+	for _, v := range agg {
+		out = append(out, *v)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Year != out[j].Year {
+			return out[i].Year < out[j].Year
+		}
+		return out[i].Month < out[j].Month
+	})
+	return out, nil
+}
+
+func (s *Store) GetDailyTotals(from, to time.Time) ([]domain.DailyTotal, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	agg := map[string]*domain.DailyTotal{}
+	for _, t := range s.transactions {
+		if t.IsProjection || t.Status != domain.StatusCompleted {
+			continue
+		}
+		d, err := time.ParseInLocation("2006-01-02", t.Date, time.Local)
+		if err != nil {
+			continue
+		}
+		if d.Before(from) || d.After(to) {
+			continue
+		}
+		if agg[t.Date] == nil {
+			agg[t.Date] = &domain.DailyTotal{Date: t.Date}
+		}
+		if t.Type == domain.TypeIngreso {
+			agg[t.Date].Ingresos += t.Amount
+		} else {
+			agg[t.Date].Egresos += t.Amount
+		}
+	}
+	out := make([]domain.DailyTotal, 0, len(agg))
+	for _, v := range agg {
+		out = append(out, *v)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Date < out[j].Date })
+	return out, nil
+}
+
+func (s *Store) GetPendingTransactions() ([]*domain.Transaction, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []*domain.Transaction
+	for _, t := range s.transactions {
+		if t.Status == domain.StatusPending && !t.IsProjection {
+			cp := *t
+			out = append(out, &cp)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Date < out[j].Date })
+	return out, nil
+}
+
+func (s *Store) GetPendingProjections(horizon time.Time) ([]*domain.Transaction, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []*domain.Transaction
+	for _, t := range s.transactions {
+		if !t.IsProjection || t.Status == domain.StatusCancelled {
+			continue
+		}
+		d, err := time.ParseInLocation("2006-01-02", t.Date, time.Local)
+		if err != nil {
+			continue
+		}
+		if !d.After(horizon) {
+			cp := *t
+			out = append(out, &cp)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Date < out[j].Date })
+	return out, nil
+}
+
+func (s *Store) GetCategoryTotals(from, to time.Time, txType domain.TransactionType) ([]domain.CategoryTotal, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	agg := map[string]float64{}
+	for _, t := range s.transactions {
+		if t.IsProjection || t.Status != domain.StatusCompleted || t.Type != txType {
+			continue
+		}
+		d, err := time.ParseInLocation("2006-01-02", t.Date, time.Local)
+		if err != nil {
+			continue
+		}
+		if d.Before(from) || d.After(to) {
+			continue
+		}
+		agg[t.Category] += t.Amount
+	}
+	out := make([]domain.CategoryTotal, 0, len(agg))
+	for cat, amt := range agg {
+		out = append(out, domain.CategoryTotal{Category: cat, Amount: amt})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Amount > out[j].Amount })
+	return out, nil
+}
+
+func (s *Store) GetWeeklyTotals(year int, month time.Month) ([]domain.WeeklyComparison, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	agg := map[int]*domain.WeeklyComparison{}
+	for _, t := range s.transactions {
+		if t.IsProjection || t.Status != domain.StatusCompleted {
+			continue
+		}
+		d, err := time.ParseInLocation("2006-01-02", t.Date, time.Local)
+		if err != nil {
+			continue
+		}
+		if d.Year() != year || d.Month() != month {
+			continue
+		}
+		week := (d.Day()-1)/7 + 1
+		if agg[week] == nil {
+			agg[week] = &domain.WeeklyComparison{Week: week}
+		}
+		if t.Type == domain.TypeIngreso {
+			agg[week].Ingresos += t.Amount
+		} else {
+			agg[week].Egresos += t.Amount
+		}
+	}
+	out := make([]domain.WeeklyComparison, 0, len(agg))
+	for _, v := range agg {
+		out = append(out, *v)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Week < out[j].Week })
+	return out, nil
 }
 
 // ── Users ─────────────────────────────────────────────────────────────────────
@@ -569,6 +753,19 @@ func (s *Store) GetAllInvoices() ([]*domain.Invoice, error) {
 	return list, nil
 }
 
+func (s *Store) GetPendingInvoices() ([]*domain.Invoice, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	list := make([]*domain.Invoice, 0)
+	for _, inv := range s.invoices {
+		if inv.Status == domain.StatusPending || inv.Status == domain.StatusPartial {
+			cp := *inv
+			list = append(list, &cp)
+		}
+	}
+	return list, nil
+}
+
 func (s *Store) GetInvoiceByID(id string) (*domain.Invoice, bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -620,6 +817,19 @@ func (s *Store) GetAllPurchases() ([]*domain.Purchase, error) {
 	for _, pur := range s.purchases {
 		cp := *pur
 		list = append(list, &cp)
+	}
+	return list, nil
+}
+
+func (s *Store) GetPendingPurchases() ([]*domain.Purchase, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	list := make([]*domain.Purchase, 0)
+	for _, pur := range s.purchases {
+		if pur.Status == domain.StatusPending || pur.Status == domain.StatusPartial {
+			cp := *pur
+			list = append(list, &cp)
+		}
 	}
 	return list, nil
 }

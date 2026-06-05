@@ -25,14 +25,48 @@ func (h *ReportsHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 		period = "mensual"
 	}
 
-	all, err := h.store.GetAllTransactions()
+	now := time.Now()
+	curY, curM, _ := now.Date()
+	curQ := (int(curM)-1)/3 + 1
+
+	// Fetch current cash balance and two years of monthly totals (covers all lookbacks).
+	balance, err := h.store.GetCurrentBalance()
 	if err != nil {
 		jsonError(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	now := time.Now()
-	curY, curM, _ := now.Date()
-	curQ := (int(curM)-1)/3 + 1
+	twoYearsAgo := time.Date(curY-2, curM, 1, 0, 0, 0, 0, now.Location())
+	monthly, err := h.store.GetMonthlyTotals(twoYearsAgo, now)
+	if err != nil {
+		jsonError(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	// Index monthly totals for O(1) lookup.
+	mIdx := make(map[monthKey]domain.MonthlyTotal, len(monthly))
+	for _, mt := range monthly {
+		mIdx[monthKey{mt.Year, mt.Month}] = mt
+	}
+	lookupMonth := func(y int, m time.Month) (float64, float64) {
+		mt := mIdx[monthKey{y, m}]
+		return mt.Income, mt.Expense
+	}
+	lookupQuarter := func(y, q int) (float64, float64) {
+		start := time.Month((q-1)*3 + 1)
+		var inc, exp float64
+		for i := time.Month(0); i < 3; i++ {
+			mo := start + i
+			yr := y
+			for mo > 12 {
+				mo -= 12
+				yr++
+			}
+			i2, e2 := lookupMonth(yr, mo)
+			inc += i2
+			exp += e2
+		}
+		return inc, exp
+	}
 
 	var chart []domain.ReportDataPoint
 	var pie []domain.PieSlice
@@ -48,7 +82,7 @@ func (h *ReportsHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 		for q := 1; q <= 4; q++ {
 			var inc, exp float64
 			if q <= curQ {
-				inc, exp = quarterlyTotals(all, curY, q)
+				inc, exp = lookupQuarter(curY, q)
 			}
 			chart[q-1] = domain.ReportDataPoint{
 				Name:     fmt.Sprintf("Q%d %d", q, curY),
@@ -56,9 +90,22 @@ func (h *ReportsHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 				Egresos:  exp,
 			}
 		}
-		pie = categoryBreakdownRange(all, quarterStart(curY, curQ), now)
-		categoryTable = categoryComparisonTable(all, quarterStart(curY, curQ), now,
-			quarterStart(curY, curQ-1), quarterStart(curY, curQ))
+
+		qStart := quarterStart(curY, curQ)
+		currCat, err := h.store.GetCategoryTotals(qStart, now, domain.TypeEgreso)
+		if err != nil {
+			jsonError(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		pie = buildPieSlices(currCat)
+
+		prevQStart := quarterStart(curY, curQ-1)
+		prevCat, err := h.store.GetCategoryTotals(prevQStart, qStart, domain.TypeEgreso)
+		if err != nil {
+			jsonError(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		categoryTable = buildCategoryTable(currCat, prevCat)
 
 		var sumQ float64
 		lookQ := 0
@@ -69,7 +116,7 @@ func (h *ReportsHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 				q += 4
 				y--
 			}
-			inc, exp := quarterlyTotals(all, y, q)
+			inc, exp := lookupQuarter(y, q)
 			if inc+exp > 0 {
 				sumQ += inc - exp
 				lookQ++
@@ -80,8 +127,8 @@ func (h *ReportsHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 			avgQ = sumQ / float64(lookQ)
 		}
 		quartersLeft := float64(4 - curQ)
-		projectedClose = currentBalance(all) + avgQ*quartersLeft
-		probability = netPositiveRate(all, 4, "quarter", now)
+		projectedClose = balance + avgQ*quartersLeft
+		probability = netPositiveRate(mIdx, 4, "quarter", now)
 		if avgQ >= 0 {
 			insight = fmt.Sprintf("Promedio neto positivo en los últimos %d trimestres: %s/trimestre.", lookQ, formatCOP(avgQ))
 		} else {
@@ -94,7 +141,7 @@ func (h *ReportsHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 		for m := 1; m <= 12; m++ {
 			var inc, exp float64
 			if time.Month(m) <= curM {
-				inc, exp = monthlyTotals(all, curY, time.Month(m))
+				inc, exp = lookupMonth(curY, time.Month(m))
 			}
 			chart[m-1] = domain.ReportDataPoint{
 				Name:     spanishMonths[time.Month(m)],
@@ -102,23 +149,34 @@ func (h *ReportsHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 				Egresos:  exp,
 			}
 		}
-		pie = categoryBreakdownRange(all, time.Date(curY, 1, 1, 0, 0, 0, 0, now.Location()), now)
+
+		yearStart := time.Date(curY, 1, 1, 0, 0, 0, 0, now.Location())
+		currCat, err := h.store.GetCategoryTotals(yearStart, now, domain.TypeEgreso)
+		if err != nil {
+			jsonError(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		pie = buildPieSlices(currCat)
+
 		prevYearStart := time.Date(curY-1, 1, 1, 0, 0, 0, 0, now.Location())
 		prevYearEnd := now.AddDate(-1, 0, 0)
-		categoryTable = categoryComparisonTable(all,
-			time.Date(curY, 1, 1, 0, 0, 0, 0, now.Location()), now,
-			prevYearStart, prevYearEnd)
+		prevCat, err := h.store.GetCategoryTotals(prevYearStart, prevYearEnd, domain.TypeEgreso)
+		if err != nil {
+			jsonError(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		categoryTable = buildCategoryTable(currCat, prevCat)
 
 		var ytdInc, ytdExp float64
 		for m := 1; m <= int(curM); m++ {
-			inc, exp := monthlyTotals(all, curY, time.Month(m))
+			inc, exp := lookupMonth(curY, time.Month(m))
 			ytdInc += inc
 			ytdExp += exp
 		}
 		avgMonthNet := (ytdInc - ytdExp) / float64(curM)
 		monthsLeft := float64(12 - int(curM))
-		projectedClose = currentBalance(all) + avgMonthNet*monthsLeft
-		probability = netPositiveRate(all, 12, "month", now)
+		projectedClose = balance + avgMonthNet*monthsLeft
+		probability = netPositiveRate(mIdx, 12, "month", now)
 		if avgMonthNet >= 0 {
 			insight = fmt.Sprintf("Ritmo mensual positivo en lo que va del año %d: %s/mes promedio.", curY, formatCOP(avgMonthNet))
 		} else {
@@ -130,30 +188,42 @@ func (h *ReportsHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 		chart = make([]domain.ReportDataPoint, 6)
 		for i := 0; i < 6; i++ {
 			t := now.AddDate(0, -(5 - i), 0)
-			inc, exp := monthlyTotals(all, t.Year(), t.Month())
+			inc, exp := lookupMonth(t.Year(), t.Month())
 			chart[i] = domain.ReportDataPoint{
 				Name:     spanishMonths[t.Month()],
 				Ingresos: inc,
 				Egresos:  exp,
 			}
 		}
+
 		sixMonthsAgo := now.AddDate(0, -5, 0)
 		sixMonthStart := time.Date(sixMonthsAgo.Year(), sixMonthsAgo.Month(), 1, 0, 0, 0, 0, now.Location())
+		currCat, err := h.store.GetCategoryTotals(sixMonthStart, now, domain.TypeEgreso)
+		if err != nil {
+			jsonError(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		pie = buildPieSlices(currCat)
+
 		prevSixMonthsAgo := now.AddDate(0, -11, 0)
 		prevSixMonthStart := time.Date(prevSixMonthsAgo.Year(), prevSixMonthsAgo.Month(), 1, 0, 0, 0, 0, now.Location())
-		pie = categoryBreakdownRange(all, sixMonthStart, now)
-		categoryTable = categoryComparisonTable(all, sixMonthStart, now, prevSixMonthStart, sixMonthStart)
+		prevCat, err := h.store.GetCategoryTotals(prevSixMonthStart, sixMonthStart, domain.TypeEgreso)
+		if err != nil {
+			jsonError(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		categoryTable = buildCategoryTable(currCat, prevCat)
 
 		var sumNet float64
 		for i := 1; i <= 3; i++ {
 			t := now.AddDate(0, -i, 0)
-			inc, exp := monthlyTotals(all, t.Year(), t.Month())
+			inc, exp := lookupMonth(t.Year(), t.Month())
 			sumNet += inc - exp
 		}
 		avgMonthlyNet := sumNet / 3
 		monthsRemaining := float64(12 - int(curM))
-		projectedClose = currentBalance(all) + avgMonthlyNet*monthsRemaining
-		probability = netPositiveRate(all, 6, "month", now)
+		projectedClose = balance + avgMonthlyNet*monthsRemaining
+		probability = netPositiveRate(mIdx, 6, "month", now)
 		if avgMonthlyNet >= 0 {
 			insight = "Flujo neto promedio positivo en los últimos 3 meses: " + formatCOP(avgMonthlyNet) + "/mes."
 		} else {
@@ -181,6 +251,8 @@ func (h *ReportsHandler) Export(w http.ResponseWriter, r *http.Request) {
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
+type monthKey struct{ y int; m time.Month }
+
 func quarterStart(year, quarter int) time.Time {
 	for quarter <= 0 {
 		quarter += 4
@@ -190,34 +262,18 @@ func quarterStart(year, quarter int) time.Time {
 	return time.Date(year, month, 1, 0, 0, 0, 0, time.Local)
 }
 
-func categoryBreakdownRange(txs []*domain.Transaction, from, to time.Time) []domain.PieSlice {
-	catMap := map[string]float64{}
+func buildPieSlices(totals []domain.CategoryTotal) []domain.PieSlice {
 	var total float64
-	for _, t := range txs {
-		if t.IsProjection || t.Status == domain.StatusCancelled || t.Type != domain.TypeEgreso {
-			continue
-		}
-		r := receivedAmount(t)
-		if r == 0 {
-			continue
-		}
-		d, err := time.ParseInLocation("2006-01-02", t.Date, time.Local)
-		if err != nil {
-			d = t.CreatedAt
-		}
-		if d.Before(from) || d.After(to) {
-			continue
-		}
-		catMap[t.Category] += r
-		total += r
+	for _, ct := range totals {
+		total += ct.Amount
 	}
-	pie := []domain.PieSlice{}
-	for cat, v := range catMap {
-		if p := pct(v, total); p > 0 {
-			pie = append(pie, domain.PieSlice{Name: cat, Value: p})
+	pie := make([]domain.PieSlice, 0, len(totals))
+	for _, ct := range totals {
+		if p := pct(ct.Amount, total); p > 0 {
+			pie = append(pie, domain.PieSlice{Name: ct.Category, Value: p})
 		}
 	}
-	sort.Slice(pie, func(i, j int) bool { return pie[i].Value > pie[j].Value })
+	// Adjust rounding so slices sum to 100
 	if len(pie) > 0 {
 		var sum float64
 		for _, s := range pie {
@@ -225,53 +281,37 @@ func categoryBreakdownRange(txs []*domain.Transaction, from, to time.Time) []dom
 		}
 		pie[0].Value = math.Round((pie[0].Value+(100-sum))*10) / 10
 	}
+	if len(pie) > 5 {
+		pie = pie[:5]
+	}
 	return pie
 }
 
-// categoryComparisonTable builds per-category cash paid for [from,to] vs [prevFrom,prevTo].
-func categoryComparisonTable(txs []*domain.Transaction, from, to, prevFrom, prevTo time.Time) []domain.CategoryRow {
-	curr := map[string]float64{}
-	prev := map[string]float64{}
-	for _, t := range txs {
-		if t.IsProjection || t.Status == domain.StatusCancelled || t.Type != domain.TypeEgreso {
-			continue
-		}
-		r := receivedAmount(t)
-		if r == 0 {
-			continue
-		}
-		d, err := time.ParseInLocation("2006-01-02", t.Date, time.Local)
-		if err != nil {
-			d = t.CreatedAt
-		}
-		if !d.Before(from) && !d.After(to) {
-			curr[t.Category] += r
-		}
-		if !d.Before(prevFrom) && d.Before(prevTo) {
-			prev[t.Category] += r
-		}
+func buildCategoryTable(curr, prev []domain.CategoryTotal) []domain.CategoryRow {
+	prevMap := make(map[string]float64, len(prev))
+	for _, ct := range prev {
+		prevMap[ct.Category] = ct.Amount
 	}
-	rows := []domain.CategoryRow{}
-	for cat, amount := range curr {
-		p := prev[cat]
+	rows := make([]domain.CategoryRow, 0, len(curr))
+	for _, ct := range curr {
+		p := prevMap[ct.Category]
 		var change float64
 		if p > 0 {
-			change = math.Round(((amount-p)/p)*1000) / 10 // 1 decimal
+			change = math.Round(((ct.Amount-p)/p)*1000) / 10
 		}
 		rows = append(rows, domain.CategoryRow{
-			Category:   cat,
-			Amount:     amount,
+			Category:   ct.Category,
+			Amount:     ct.Amount,
 			Prev:       p,
 			Change:     change,
-			IsPositive: amount <= p || p == 0,
+			IsPositive: ct.Amount <= p || p == 0,
 		})
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].Amount > rows[j].Amount })
 	return rows
 }
 
-// netPositiveRate returns the % of recent periods where net flow was positive.
-func netPositiveRate(txs []*domain.Transaction, lookback int, granularity string, now time.Time) float64 {
+func netPositiveRate(mIdx map[monthKey]domain.MonthlyTotal, lookback int, granularity string, now time.Time) float64 {
 	curQ := (int(now.Month())-1)/3 + 1
 	positive := 0
 	for i := 1; i <= lookback; i++ {
@@ -284,10 +324,22 @@ func netPositiveRate(txs []*domain.Transaction, lookback int, granularity string
 				q += 4
 				y--
 			}
-			inc, exp = quarterlyTotals(txs, y, q)
+			start := time.Month((q-1)*3 + 1)
+			for j := time.Month(0); j < 3; j++ {
+				mo := start + j
+				yr := y
+				for mo > 12 {
+					mo -= 12
+					yr++
+				}
+				mt := mIdx[monthKey{yr, mo}]
+				inc += mt.Income
+				exp += mt.Expense
+			}
 		default:
 			t := now.AddDate(0, -i, 0)
-			inc, exp = monthlyTotals(txs, t.Year(), t.Month())
+			mt := mIdx[monthKey{t.Year(), t.Month()}]
+			inc, exp = mt.Income, mt.Expense
 		}
 		if inc >= exp {
 			positive++

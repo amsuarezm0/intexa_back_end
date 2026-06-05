@@ -102,6 +102,8 @@ CREATE TABLE IF NOT EXISTS invoices (
                                           CHECK (status IN ('Completado', 'Pendiente', 'Anulado', 'Parcial')),
     category                TEXT          NOT NULL DEFAULT 'Operacional - Ventas',
     detail                  TEXT          NOT NULL DEFAULT '',
+    reference               TEXT,
+    description             TEXT,
     synced_at               TIMESTAMPTZ   NOT NULL DEFAULT now(),
     created_at              TIMESTAMPTZ   NOT NULL DEFAULT now(),
     updated_at              TIMESTAMPTZ   NOT NULL DEFAULT now()
@@ -126,6 +128,8 @@ CREATE TABLE IF NOT EXISTS purchases (
                                           CHECK (status IN ('Completado', 'Pendiente', 'Anulado', 'Parcial')),
     category                TEXT          NOT NULL DEFAULT 'Gastos Operativos',
     detail                  TEXT          NOT NULL DEFAULT '',
+    reference               TEXT,
+    description             TEXT,
     synced_at               TIMESTAMPTZ   NOT NULL DEFAULT now(),
     created_at              TIMESTAMPTZ   NOT NULL DEFAULT now(),
     updated_at              TIMESTAMPTZ   NOT NULL DEFAULT now()
@@ -170,13 +174,15 @@ CREATE INDEX IF NOT EXISTS idx_transactions_source      ON transactions(source);
 CREATE INDEX IF NOT EXISTS idx_transactions_external_id ON transactions(external_id);
 CREATE INDEX IF NOT EXISTS idx_transactions_category    ON transactions(category);
 
-CREATE INDEX IF NOT EXISTS idx_invoices_date     ON invoices(date);
-CREATE INDEX IF NOT EXISTS idx_invoices_status   ON invoices(status);
-CREATE INDEX IF NOT EXISTS idx_invoices_customer ON invoices(customer_identification);
+CREATE INDEX IF NOT EXISTS idx_invoices_date      ON invoices(date);
+CREATE INDEX IF NOT EXISTS idx_invoices_status    ON invoices(status);
+CREATE INDEX IF NOT EXISTS idx_invoices_customer  ON invoices(customer_identification);
+CREATE INDEX IF NOT EXISTS idx_invoices_reference ON invoices(reference);
 
-CREATE INDEX IF NOT EXISTS idx_purchases_date     ON purchases(date);
-CREATE INDEX IF NOT EXISTS idx_purchases_status   ON purchases(status);
-CREATE INDEX IF NOT EXISTS idx_purchases_provider ON purchases(provider_identification);
+CREATE INDEX IF NOT EXISTS idx_purchases_date      ON purchases(date);
+CREATE INDEX IF NOT EXISTS idx_purchases_status    ON purchases(status);
+CREATE INDEX IF NOT EXISTS idx_purchases_provider  ON purchases(provider_identification);
+CREATE INDEX IF NOT EXISTS idx_purchases_reference ON purchases(reference);
 
 CREATE INDEX IF NOT EXISTS idx_activity_logs_created ON activity_logs(created_at DESC);
 
