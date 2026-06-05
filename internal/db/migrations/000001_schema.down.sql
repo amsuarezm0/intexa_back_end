@@ -1,15 +1,9 @@
 DROP TABLE IF EXISTS activity_logs;
+DROP TABLE IF EXISTS bank_balance;
 DROP TABLE IF EXISTS settings;
 DROP TABLE IF EXISTS budget_lines;
 DROP TABLE IF EXISTS transactions;
 DROP TABLE IF EXISTS categories;
-DROP TABLE IF EXISTS siigo_purchase_items;
-DROP TABLE IF EXISTS siigo_purchases;
-DROP TABLE IF EXISTS siigo_invoice_items;
-DROP TABLE IF EXISTS siigo_invoices;
-DROP TABLE IF EXISTS siigo_products;
-DROP TABLE IF EXISTS siigo_customers;
 DROP TABLE IF EXISTS siigo_configs;
 DROP TABLE IF EXISTS allowed_domains;
-DROP TABLE IF EXISTS oauth_states;
 DROP TABLE IF EXISTS users;

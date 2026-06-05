@@ -173,12 +173,21 @@ func (s *Store) GetUserByID(id string) (*domain.User, bool, error) {
 func (s *Store) CreateUser(u *domain.User) error {
 	u.ID = uuid.NewString()
 	u.Active = true
-	return s.pool.QueryRow(bg(), `
+	if err := s.pool.QueryRow(bg(), `
 		INSERT INTO users (id, name, email, role, password_hash, ms_oid, active)
 		VALUES ($1,$2,$3,$4,NULLIF($5,''),NULLIF($6,''),true)
 		RETURNING created_at`,
 		u.ID, u.Name, u.Email, string(u.Role), u.Password, u.MicrosoftOID,
-	).Scan(&u.CreatedAt)
+	).Scan(&u.CreatedAt); err != nil {
+		return err
+	}
+	_, err := s.pool.Exec(bg(), `
+		INSERT INTO settings (user_id, key, value) VALUES
+		  ($1, 'baseCurrency',     '"COP"'),
+		  ($1, 'autoExchangeRate', 'true')
+		ON CONFLICT (user_id, key) DO NOTHING`,
+		u.ID)
+	return err
 }
 
 func (s *Store) UpdateUser(u *domain.User) (bool, error) {

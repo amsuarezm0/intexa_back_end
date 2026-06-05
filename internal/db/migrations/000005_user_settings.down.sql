@@ -1,3 +1,0 @@
-ALTER TABLE settings DROP CONSTRAINT IF EXISTS settings_pkey;
-ALTER TABLE settings DROP COLUMN IF EXISTS user_id;
-ALTER TABLE settings ADD PRIMARY KEY (key);

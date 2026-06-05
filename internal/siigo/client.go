@@ -16,8 +16,6 @@ const (
 	AuthPath     = "/auth"
 	InvoicePath  = "/v1/invoices"
 	PurchasePath = "/v1/purchases"
-	CustomerPath = "/v1/customers"
-	ProductPath  = "/v1/products"
 )
 
 type Client struct {
@@ -171,24 +169,6 @@ func (c *Client) GetPurchases(dateStart, dateEnd string, page, pageSize int) (*P
 		PurchasePath, dateStart, dateEnd, page, pageSize)
 	var result PurchaseListResponse
 	return &result, c.get(path, &result)
-}
-
-// GetCustomers returns a paged list of customers.
-func (c *Client) GetCustomers(page, pageSize int) ([]Customer, error) {
-	path := fmt.Sprintf("%s?page=%d&page_size=%d", CustomerPath, page, pageSize)
-	var result struct {
-		Results []Customer `json:"results"`
-	}
-	return result.Results, c.get(path, &result)
-}
-
-// GetProducts returns a paged list of products.
-func (c *Client) GetProducts(page, pageSize int) ([]Product, error) {
-	path := fmt.Sprintf("%s?page=%d&page_size=%d", ProductPath, page, pageSize)
-	var result struct {
-		Results []Product `json:"results"`
-	}
-	return result.Results, c.get(path, &result)
 }
 
 // IsConnected reports whether the client holds a valid, non-expired token.

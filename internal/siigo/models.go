@@ -148,33 +148,3 @@ type PurchaseProvider struct {
 	Active         bool   `json:"active"`
 }
 
-// Customer
-
-type Customer struct {
-	ID             string `json:"id"`
-	PersonType     string `json:"person_type"`
-	IDType         string `json:"id_type"`
-	Identification string `json:"identification"`
-	Name           string `json:"name"`
-	CommercialName string `json:"commercial_name"`
-	Active         bool   `json:"active"`
-	Email          string `json:"email"`
-	Phone          string `json:"phone"`
-}
-
-// Product
-
-type Product struct {
-	Code              string         `json:"code"`
-	Name              string         `json:"name"`
-	AccountGroup      int            `json:"account_group"`
-	Type              string         `json:"type"`
-	TaxClassification string         `json:"tax_classification"`
-	Active            bool           `json:"active"`
-	Price             []ProductPrice `json:"price"`
-}
-
-type ProductPrice struct {
-	CurrencyName string  `json:"currency_name"`
-	Value        float64 `json:"value"`
-}
