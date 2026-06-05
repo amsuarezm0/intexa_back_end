@@ -175,21 +175,13 @@ func (h *ProjectionsHandler) GetSummary(w http.ResponseWriter, r *http.Request) 
 		if t.Type == domain.TypeEgreso {
 			color, icon = "brand-danger", "AlertCircle"
 		}
-		var dueStr string
-		switch {
-		case daysAway <= 0:
-			dueStr = "Vence hoy"
-		case daysAway == 1:
-			dueStr = "Vence mañana"
-		default:
-			dueStr = fmt.Sprintf("Próximo en %d días", daysAway)
-		}
 		entries = append(entries, entry{
 			alert: domain.ProjectionAlert{
-				ID: t.ID, Icon: icon,
+				ID:          t.ID,
+				Icon:        icon,
 				Title:       t.Description,
 				Description: t.Category,
-				DueDate:     dueStr,
+				DueDate:     t.Date, // ISO YYYY-MM-DD
 				Amount:      amount,
 				Color:       color,
 			},
@@ -209,7 +201,7 @@ func (h *ProjectionsHandler) GetSummary(w http.ResponseWriter, r *http.Request) 
 			continue
 		}
 		daysAway, ok := parseDaysAway(t.Date)
-		if !ok {
+		if !ok || daysAway > days {
 			continue
 		}
 		amount := t.Amount
@@ -236,7 +228,7 @@ func (h *ProjectionsHandler) GetSummary(w http.ResponseWriter, r *http.Request) 
 			effective := pt.tx.Amount - alreadyPaid
 			alreadyPaid = 0
 			daysAway, ok := parseDaysAway(pt.tx.Date)
-			if !ok {
+			if !ok || daysAway > days {
 				continue
 			}
 			addAlert(pt.tx, effective, daysAway)
@@ -252,9 +244,6 @@ func (h *ProjectionsHandler) GetSummary(w http.ResponseWriter, r *http.Request) 
 	alerts := make([]domain.ProjectionAlert, 0, len(entries))
 	for _, e := range entries {
 		alerts = append(alerts, e.alert)
-	}
-	if len(alerts) > 5 {
-		alerts = alerts[:5]
 	}
 
 	jsonOK(w, domain.ProjectionSummary{

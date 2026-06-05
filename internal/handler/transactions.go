@@ -25,6 +25,9 @@ func (h *TransactionsHandler) List(w http.ResponseWriter, r *http.Request) {
 	search := strings.ToLower(q.Get("search"))
 	typeFilter := q.Get("type")
 	statusFilter := q.Get("status")
+	dateFrom := q.Get("dateFrom")   // YYYY-MM-DD inclusive
+	dateTo := q.Get("dateTo")       // YYYY-MM-DD inclusive
+	sourceFilter := q.Get("source") // "Siigo", "Manual", or ""
 	isProjectionParam := q.Get("isProjection") // "true", "false", or "" (no filter)
 	page, _ := strconv.Atoi(q.Get("page"))
 	limit, _ := strconv.Atoi(q.Get("limit"))
@@ -58,6 +61,15 @@ func (h *TransactionsHandler) List(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if statusFilter != "" && string(t.Status) != statusFilter {
+			continue
+		}
+		if dateFrom != "" && t.Date < dateFrom {
+			continue
+		}
+		if dateTo != "" && t.Date > dateTo {
+			continue
+		}
+		if sourceFilter != "" && string(t.Source) != sourceFilter {
 			continue
 		}
 		if isProjectionParam == "true" && !t.IsProjection {
@@ -174,7 +186,7 @@ func (h *TransactionsHandler) Summary(w http.ResponseWriter, r *http.Request) {
 	}
 	now := time.Now()
 	curY, curM := now.Year(), now.Month()
-	var totalBalance, monthlyIncome, monthlyExpense float64
+	var totalBalance, totalIncome, totalExpense, monthlyIncome, monthlyExpense float64
 	for _, t := range all {
 		if t.IsProjection || t.Status == domain.StatusCancelled {
 			continue
@@ -185,8 +197,10 @@ func (h *TransactionsHandler) Summary(w http.ResponseWriter, r *http.Request) {
 		}
 		if t.Type == domain.TypeIngreso {
 			totalBalance += r
+			totalIncome += r
 		} else {
 			totalBalance -= r
+			totalExpense += r
 		}
 		y, m, _ := txDate(t)
 		if y == curY && m == curM {
@@ -199,6 +213,8 @@ func (h *TransactionsHandler) Summary(w http.ResponseWriter, r *http.Request) {
 	}
 	jsonOK(w, domain.TransactionSummary{
 		TotalBalance:   totalBalance,
+		TotalIncome:    totalIncome,
+		TotalExpense:   totalExpense,
 		MonthlyIncome:  monthlyIncome,
 		MonthlyExpense: monthlyExpense,
 	})

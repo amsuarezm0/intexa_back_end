@@ -273,6 +273,8 @@ type TransactionListResponse struct {
 
 type TransactionSummary struct {
 	TotalBalance   float64 `json:"totalBalance"`
+	TotalIncome    float64 `json:"totalIncome"`
+	TotalExpense   float64 `json:"totalExpense"`
 	MonthlyIncome  float64 `json:"monthlyIncome"`
 	MonthlyExpense float64 `json:"monthlyExpense"`
 }
