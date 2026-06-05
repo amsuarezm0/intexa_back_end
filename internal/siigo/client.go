@@ -12,10 +12,12 @@ import (
 )
 
 const (
-	BaseURL      = "https://api.siigo.com"
-	AuthPath     = "/auth"
-	InvoicePath  = "/v1/invoices"
-	PurchasePath = "/v1/purchases"
+	BaseURL            = "https://api.siigo.com"
+	AuthPath           = "/auth"
+	InvoicePath        = "/v1/invoices"
+	PurchasePath       = "/v1/purchases"
+	VoucherPath        = "/v1/vouchers"
+	PaymentReceiptPath = "/v1/payment-receipts"
 )
 
 type Client struct {
@@ -168,6 +170,22 @@ func (c *Client) GetPurchases(dateStart, dateEnd string, page, pageSize int) (*P
 	path := fmt.Sprintf("%s?date_start=%s&date_end=%s&page=%d&page_size=%d",
 		PurchasePath, dateStart, dateEnd, page, pageSize)
 	var result PurchaseListResponse
+	return &result, c.get(path, &result)
+}
+
+// GetVouchers returns cash receipt vouchers (RC) for the given date range.
+func (c *Client) GetVouchers(dateStart, dateEnd string, page, pageSize int) (*VoucherListResponse, error) {
+	path := fmt.Sprintf("%s?date_start=%s&date_end=%s&page=%d&page_size=%d",
+		VoucherPath, dateStart, dateEnd, page, pageSize)
+	var result VoucherListResponse
+	return &result, c.get(path, &result)
+}
+
+// GetPaymentReceipts returns payment receipt vouchers (RP) for the given date range.
+func (c *Client) GetPaymentReceipts(dateStart, dateEnd string, page, pageSize int) (*PaymentReceiptListResponse, error) {
+	path := fmt.Sprintf("%s?date_start=%s&date_end=%s&page=%d&page_size=%d",
+		PaymentReceiptPath, dateStart, dateEnd, page, pageSize)
+	var result PaymentReceiptListResponse
 	return &result, c.get(path, &result)
 }
 

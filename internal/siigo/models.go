@@ -148,3 +148,56 @@ type PurchaseProvider struct {
 	Active         bool   `json:"active"`
 }
 
+// Voucher (RC — comprobante de cobro, ingreso real de caja)
+
+type VoucherListResponse struct {
+	Pagination Pagination `json:"pagination"`
+	Results    []Voucher  `json:"results"`
+}
+
+type Voucher struct {
+	ID           string          `json:"id"`
+	Prefix       string          `json:"prefix"`
+	Number       int             `json:"number"`
+	Name         string          `json:"name"`
+	Date         string          `json:"date"` // YYYY-MM-DD
+	Customer     VoucherCustomer `json:"customer"`
+	Total        float64         `json:"total"`
+	Observations string          `json:"observations"`
+	Items        []VoucherItem   `json:"items"`
+}
+
+type VoucherCustomer struct {
+	Identification string `json:"identification"`
+	Name           string `json:"name"`
+}
+
+type VoucherItem struct {
+	Description string  `json:"description"`
+	Total       float64 `json:"total"`
+}
+
+// PaymentReceipt (RP — comprobante de egreso, pago real a proveedor)
+
+type PaymentReceiptListResponse struct {
+	Pagination Pagination       `json:"pagination"`
+	Results    []PaymentReceipt `json:"results"`
+}
+
+type PaymentReceipt struct {
+	ID           string                 `json:"id"`
+	Prefix       string                 `json:"prefix"`
+	Number       int                    `json:"number"`
+	Name         string                 `json:"name"`
+	Date         string                 `json:"date"` // YYYY-MM-DD
+	Provider     PaymentReceiptProvider `json:"provider"`
+	Total        float64                `json:"total"`
+	Observations string                 `json:"observations"`
+	Items        []VoucherItem          `json:"items"`
+}
+
+type PaymentReceiptProvider struct {
+	Identification string `json:"identification"`
+	Name           string `json:"name"`
+}
+

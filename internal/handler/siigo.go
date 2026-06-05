@@ -87,12 +87,14 @@ func (h *SiigoHandler) runScheduler() {
 			continue
 		}
 		slog.Info("siigo_sync_done",
-			"mode",               mode,
-			"invoices_imported",  result.InvoicesImported,
-			"purchases_imported", result.PurchasesImported,
-			"updated",            result.Updated,
-			"date_start",         dateStart,
-			"date_end",           dateEnd,
+			"mode",                     mode,
+			"invoices_imported",        result.InvoicesImported,
+			"purchases_imported",       result.PurchasesImported,
+			"vouchers_imported",        result.VouchersImported,
+			"payment_receipts_imported", result.PaymentReceiptsImported,
+			"updated",                  result.Updated,
+			"date_start",               dateStart,
+			"date_end",                 dateEnd,
 		)
 	}
 }
@@ -265,22 +267,31 @@ func (h *SiigoHandler) runSync(client *siigopkg.Client, mode domain.SiigoSyncMod
 	if err := h.syncPurchases(client, dateStart, dateEnd, result); err != nil {
 		return nil, err
 	}
+	if err := h.syncVouchers(client, dateStart, dateEnd, result); err != nil {
+		return nil, err
+	}
+	if err := h.syncPaymentReceipts(client, dateStart, dateEnd, result); err != nil {
+		return nil, err
+	}
 
 	h.store.UpdateSiigoLastSync(time.Now())    //nolint
 	h.store.AddActivityLog(domain.ActivityLog{ //nolint
 		UserName: actor, Initial: initial,
-		Action: fmt.Sprintf("Sync Siigo [%s] (+%d FV, +%d FC, ~%d actualizados)",
-			mode, result.InvoicesImported, result.PurchasesImported, result.Updated),
+		Action: fmt.Sprintf("Sync Siigo [%s] (+%d FV, +%d FC, +%d RC, +%d RP, ~%d actualizados)",
+			mode, result.InvoicesImported, result.PurchasesImported,
+			result.VouchersImported, result.PaymentReceiptsImported, result.Updated),
 		Module: "Integración", Color: "bg-green-500",
 	})
 	slog.Info("siigo_sync_complete",
-		"mode",               mode,
-		"actor",              actor,
-		"invoices_imported",  result.InvoicesImported,
-		"purchases_imported", result.PurchasesImported,
-		"updated",            result.Updated,
-		"date_start",         dateStart,
-		"date_end",           dateEnd,
+		"mode",                      mode,
+		"actor",                      actor,
+		"invoices_imported",          result.InvoicesImported,
+		"purchases_imported",         result.PurchasesImported,
+		"vouchers_imported",          result.VouchersImported,
+		"payment_receipts_imported",  result.PaymentReceiptsImported,
+		"updated",                    result.Updated,
+		"date_start",                 dateStart,
+		"date_end",                   dateEnd,
 	)
 	return result, nil
 }
@@ -376,6 +387,104 @@ func (h *SiigoHandler) syncPurchases(client *siigopkg.Client, dateStart, dateEnd
 			}
 			if inserted {
 				result.PurchasesImported++
+			} else {
+				result.Updated++
+			}
+		}
+		if page*siigoPageSize >= resp.Pagination.TotalResults {
+			break
+		}
+	}
+	return nil
+}
+
+func (h *SiigoHandler) syncVouchers(client *siigopkg.Client, dateStart, dateEnd string, result *domain.SiigoSyncResult) error {
+	for page := 1; ; page++ {
+		resp, err := client.GetVouchers(dateStart, dateEnd, page, siigoPageSize)
+		if err != nil {
+			return fmt.Errorf("fetching vouchers page %d: %w", page, err)
+		}
+		for _, v := range resp.Results {
+			if v.Date < dateStart || v.Date > dateEnd {
+				continue
+			}
+			desc := v.Name
+			if desc == "" {
+				desc = siigoRef(v.Prefix, v.Number)
+			}
+			itemDescs := make([]string, 0, len(v.Items))
+			for _, it := range v.Items {
+				if s := strings.TrimSpace(it.Description); s != "" {
+					itemDescs = append(itemDescs, s)
+				}
+			}
+			t := &domain.Transaction{
+				Date:        v.Date,
+				Description: desc,
+				Category:    categorizeInvoice(itemDescs, v.Customer.Name),
+				Type:        domain.TypeIngreso,
+				Amount:      v.Total,
+				Status:      domain.StatusCompleted,
+				Detail:      desc + ifNonEmpty(" · ", strings.Join(itemDescs, " | ")),
+				Source:      domain.SourceSIIGO,
+				ExternalID:  fmt.Sprintf("siigo-rc-%s", v.ID),
+				IsProjection: false,
+			}
+			inserted, err := h.store.ImportTransaction(t)
+			if err != nil {
+				return fmt.Errorf("saving voucher %s: %w", v.ID, err)
+			}
+			if inserted {
+				result.VouchersImported++
+			} else {
+				result.Updated++
+			}
+		}
+		if page*siigoPageSize >= resp.Pagination.TotalResults {
+			break
+		}
+	}
+	return nil
+}
+
+func (h *SiigoHandler) syncPaymentReceipts(client *siigopkg.Client, dateStart, dateEnd string, result *domain.SiigoSyncResult) error {
+	for page := 1; ; page++ {
+		resp, err := client.GetPaymentReceipts(dateStart, dateEnd, page, siigoPageSize)
+		if err != nil {
+			return fmt.Errorf("fetching payment receipts page %d: %w", page, err)
+		}
+		for _, pr := range resp.Results {
+			if pr.Date < dateStart || pr.Date > dateEnd {
+				continue
+			}
+			desc := pr.Name
+			if desc == "" {
+				desc = siigoRef(pr.Prefix, pr.Number)
+			}
+			itemDescs := make([]string, 0, len(pr.Items))
+			for _, it := range pr.Items {
+				if s := strings.TrimSpace(it.Description); s != "" {
+					itemDescs = append(itemDescs, s)
+				}
+			}
+			t := &domain.Transaction{
+				Date:        pr.Date,
+				Description: desc,
+				Category:    categorizePurchase(itemDescs, pr.Provider.Name),
+				Type:        domain.TypeEgreso,
+				Amount:      pr.Total,
+				Status:      domain.StatusCompleted,
+				Detail:      desc + ifNonEmpty(" · ", strings.Join(itemDescs, " | ")),
+				Source:      domain.SourceSIIGO,
+				ExternalID:  fmt.Sprintf("siigo-rp-%s", pr.ID),
+				IsProjection: false,
+			}
+			inserted, err := h.store.ImportTransaction(t)
+			if err != nil {
+				return fmt.Errorf("saving payment receipt %s: %w", pr.ID, err)
+			}
+			if inserted {
+				result.PaymentReceiptsImported++
 			} else {
 				result.Updated++
 			}
