@@ -100,7 +100,7 @@ func currentBalance(txs []*domain.Transaction) float64 {
 // txDate parses a transaction's accounting Date field (YYYY-MM-DD).
 // Falls back to CreatedAt if the field is malformed.
 func txDate(t *domain.Transaction) (int, time.Month, int) {
-	d, err := time.Parse("2006-01-02", t.Date)
+	d, err := time.ParseInLocation("2006-01-02", t.Date, time.Local)
 	if err != nil {
 		d = t.CreatedAt
 	}

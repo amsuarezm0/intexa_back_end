@@ -201,7 +201,7 @@ func categoryBreakdownRange(txs []*domain.Transaction, from, to time.Time) []dom
 		if r == 0 {
 			continue
 		}
-		d, err := time.Parse("2006-01-02", t.Date)
+		d, err := time.ParseInLocation("2006-01-02", t.Date, time.Local)
 		if err != nil {
 			d = t.CreatedAt
 		}
@@ -240,14 +240,14 @@ func categoryComparisonTable(txs []*domain.Transaction, from, to, prevFrom, prev
 		if r == 0 {
 			continue
 		}
-		d, err := time.Parse("2006-01-02", t.Date)
+		d, err := time.ParseInLocation("2006-01-02", t.Date, time.Local)
 		if err != nil {
 			d = t.CreatedAt
 		}
 		if !d.Before(from) && !d.After(to) {
 			curr[t.Category] += r
 		}
-		if !d.Before(prevFrom) && !d.After(prevTo) {
+		if !d.Before(prevFrom) && d.Before(prevTo) {
 			prev[t.Category] += r
 		}
 	}
