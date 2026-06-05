@@ -304,6 +304,7 @@ func (s *Store) CreateUser(u *domain.User) error {
 	s.mu.Lock()
 	cp := *u
 	s.users[u.ID] = &cp
+	s.settings[u.ID] = domain.Settings{BaseCurrency: "COP", AutoExchangeRate: true}
 	s.mu.Unlock()
 	return nil
 }
