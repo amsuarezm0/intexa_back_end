@@ -125,6 +125,11 @@ func (h *TransactionsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
+	actor, initial := actorFrom(r)
+	h.store.AddActivityLog(domain.ActivityLog{ //nolint
+		UserName: actor, Initial: initial, Action: "Creó transacción",
+		Module: "Transacciones", Color: "bg-blue-500",
+	})
 	jsonCreated(w, t)
 }
 
@@ -153,6 +158,11 @@ func (h *TransactionsHandler) Update(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
+	actor, initial := actorFrom(r)
+	h.store.AddActivityLog(domain.ActivityLog{ //nolint
+		UserName: actor, Initial: initial, Action: "Editó transacción",
+		Module: "Transacciones", Color: "bg-yellow-500",
+	})
 	jsonOK(w, t)
 }
 
@@ -175,6 +185,11 @@ func (h *TransactionsHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
+	actor, initial := actorFrom(r)
+	h.store.AddActivityLog(domain.ActivityLog{ //nolint
+		UserName: actor, Initial: initial, Action: "Eliminó transacción",
+		Module: "Transacciones", Color: "bg-red-500",
+	})
 	jsonOK(w, map[string]string{"message": "deleted"})
 }
 

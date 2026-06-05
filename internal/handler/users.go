@@ -26,26 +26,43 @@ func (h *UsersHandler) List(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, users)
 }
 
+type createUserRequest struct {
+	Name     string `json:"name"`
+	Email    string `json:"email"`
+	Role     string `json:"role"`
+	Password string `json:"password"`
+}
+
 func (h *UsersHandler) Create(w http.ResponseWriter, r *http.Request) {
-	var u domain.User
-	if err := decode(r, &u); err != nil {
+	var req createUserRequest
+	if err := decode(r, &req); err != nil {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-	if u.Password == "" {
+	if req.Password == "" {
 		jsonError(w, "password is required", http.StatusBadRequest)
 		return
 	}
-	hashed, err := bcrypt.GenerateFromPassword([]byte(u.Password), bcrypt.DefaultCost)
+	hashed, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
 		jsonError(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	u.Password = string(hashed)
+	u := domain.User{
+		Name:     req.Name,
+		Email:    req.Email,
+		Role:     domain.UserRole(req.Role),
+		Password: string(hashed),
+	}
 	if err := h.store.CreateUser(&u); err != nil {
 		jsonError(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
+	actor, initial := actorFrom(r)
+	h.store.AddActivityLog(domain.ActivityLog{ //nolint
+		UserName: actor, Initial: initial, Action: "Creó usuario",
+		Module: "Usuarios", Color: "bg-green-500",
+	})
 	jsonCreated(w, u)
 }
 
@@ -66,6 +83,11 @@ func (h *UsersHandler) Update(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "user not found", http.StatusNotFound)
 		return
 	}
+	actor, initial := actorFrom(r)
+	h.store.AddActivityLog(domain.ActivityLog{ //nolint
+		UserName: actor, Initial: initial, Action: "Editó usuario",
+		Module: "Usuarios", Color: "bg-yellow-500",
+	})
 	jsonOK(w, u)
 }
 
@@ -80,5 +102,10 @@ func (h *UsersHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "user not found", http.StatusNotFound)
 		return
 	}
+	actor, initial := actorFrom(r)
+	h.store.AddActivityLog(domain.ActivityLog{ //nolint
+		UserName: actor, Initial: initial, Action: "Desactivó usuario",
+		Module: "Usuarios", Color: "bg-red-500",
+	})
 	jsonOK(w, map[string]string{"message": "deleted"})
 }

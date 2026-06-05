@@ -263,6 +263,11 @@ func (h *ProjectionsHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 	t.IsProjection = true
 	h.store.CreateTransaction(&t)
+	actor, initial := actorFrom(r)
+	h.store.AddActivityLog(domain.ActivityLog{ //nolint
+		UserName: actor, Initial: initial, Action: "Creó proyección",
+		Module: "Proyecciones", Color: "bg-purple-500",
+	})
 	jsonCreated(w, t)
 }
 

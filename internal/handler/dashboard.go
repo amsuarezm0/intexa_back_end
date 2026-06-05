@@ -174,5 +174,10 @@ func (h *DashboardHandler) UpdateBankBalance(w http.ResponseWriter, r *http.Requ
 		jsonError(w, "failed to save bank balance", http.StatusInternalServerError)
 		return
 	}
+	_, initial := actorFrom(r)
+	h.store.AddActivityLog(domain.ActivityLog{ //nolint
+		UserName: updatedBy, Initial: initial, Action: "Actualizó saldo bancario",
+		Module: "Dashboard", Color: "bg-blue-500",
+	})
 	jsonOK(w, b)
 }

@@ -44,6 +44,11 @@ func (h *SettingsHandler) Update(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
+	actor, initial := actorFrom(r)
+	h.store.AddActivityLog(domain.ActivityLog{ //nolint
+		UserName: actor, Initial: initial, Action: "Actualizó configuración",
+		Module: "Configuración", Color: "bg-slate-500",
+	})
 	jsonOK(w, s)
 }
 
