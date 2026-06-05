@@ -50,13 +50,15 @@ func (s *Store) seed() {
 	now := time.Now()
 
 	s.categories = []domain.Category{
-		{ID: uuid.NewString(), Name: "Ventas"},
-		{ID: uuid.NewString(), Name: "Servicios"},
-		{ID: uuid.NewString(), Name: "Nómina"},
-		{ID: uuid.NewString(), Name: "Proveedores"},
-		{ID: uuid.NewString(), Name: "Impuestos"},
-		{ID: uuid.NewString(), Name: "Arrendamiento"},
-		{ID: uuid.NewString(), Name: "Otros"},
+		{ID: uuid.NewString(), Name: "Operacional - Ventas"},
+		{ID: uuid.NewString(), Name: "Ingresos Editoriales"},
+		{ID: uuid.NewString(), Name: "Ingresos Directos"},
+		{ID: uuid.NewString(), Name: "Finanzas - Inversiones"},
+		{ID: uuid.NewString(), Name: "Gastos - Personal"},
+		{ID: uuid.NewString(), Name: "Gastos - Tecnología"},
+		{ID: uuid.NewString(), Name: "Gastos Operativos"},
+		{ID: uuid.NewString(), Name: "Marketing"},
+		{ID: uuid.NewString(), Name: "Infraestructura"},
 	}
 
 	admin := &domain.User{
