@@ -24,9 +24,9 @@ func (h *DashboardHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 	firstOfMonth := time.Date(y, m, 1, 0, 0, 0, 0, now.Location())
 	prevMonthStart := firstOfMonth.AddDate(0, -1, 0)
 
-	// 7 months of monthly totals for chart + stats
-	sevenMonthsAgo := time.Date(y, m, 1, 0, 0, 0, 0, now.Location()).AddDate(0, -6, 0)
-	monthly, err := h.store.GetMonthlyTotals(sevenMonthsAgo, now)
+	// 6 months of monthly totals for chart + stats (current month included)
+	sixMonthsAgo := time.Date(y, m, 1, 0, 0, 0, 0, now.Location()).AddDate(0, -5, 0)
+	monthly, err := h.store.GetMonthlyTotals(sixMonthsAgo, now)
 	if err != nil {
 		jsonError(w, "internal server error", http.StatusInternalServerError)
 		return
@@ -93,10 +93,10 @@ func (h *DashboardHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	// Chart: last 6 months
+	// Chart: 6 months ending on current month
 	chartData := make([]domain.ChartDataPoint, 6)
 	for i := 0; i < 6; i++ {
-		t := sevenMonthsAgo.AddDate(0, i, 0)
+		t := sixMonthsAgo.AddDate(0, i, 0)
 		inc, exp := lookup(t.Year(), t.Month())
 		chartData[i] = domain.ChartDataPoint{
 			Name:     spanishMonths[t.Month()],

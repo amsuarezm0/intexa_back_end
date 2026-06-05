@@ -298,6 +298,7 @@ func (s *Store) GetWeeklyTotals(year int, month time.Month) ([]domain.WeeklyComp
 			WHERE  status='Completado'
 			  AND  EXTRACT(YEAR FROM COALESCE(due_date, date))::int = $1
 			  AND  EXTRACT(MONTH FROM COALESCE(due_date, date))::int = $2
+			  AND  COALESCE(due_date, date) <= CURRENT_DATE
 			UNION ALL
 			SELECT (EXTRACT(DAY FROM COALESCE(due_date, date))::int - 1) / 7 + 1 AS week,
 			       0 AS income, amount AS expense
@@ -305,6 +306,7 @@ func (s *Store) GetWeeklyTotals(year int, month time.Month) ([]domain.WeeklyComp
 			WHERE  status='Completado'
 			  AND  EXTRACT(YEAR FROM COALESCE(due_date, date))::int = $1
 			  AND  EXTRACT(MONTH FROM COALESCE(due_date, date))::int = $2
+			  AND  COALESCE(due_date, date) <= CURRENT_DATE
 		) sub
 		GROUP  BY week
 		ORDER  BY week`, year, int(month))
