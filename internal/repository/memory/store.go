@@ -24,6 +24,8 @@ type budgetKey struct {
 type Store struct {
 	mu           sync.RWMutex
 	transactions map[string]*domain.Transaction
+	invoices     map[string]*domain.Invoice
+	purchases    map[string]*domain.Purchase
 	users        map[string]*domain.User
 	domains      map[string]struct{}
 	categories   []domain.Category
@@ -37,6 +39,8 @@ type Store struct {
 func New() *Store {
 	s := &Store{
 		transactions: make(map[string]*domain.Transaction),
+		invoices:     make(map[string]*domain.Invoice),
+		purchases:    make(map[string]*domain.Purchase),
 		users:        make(map[string]*domain.User),
 		domains:      make(map[string]struct{}),
 		budgets:      make(map[budgetKey]float64),
@@ -205,7 +209,6 @@ func (s *Store) ImportTransaction(t *domain.Transaction) (bool, error) {
 	for id, existing := range s.transactions {
 		if existing.ExternalID == t.ExternalID {
 			existing.Amount = t.Amount
-			existing.Balance = t.Balance
 			existing.Status = t.Status
 			existing.Description = t.Description
 			existing.Date = t.Date
@@ -492,13 +495,21 @@ func (s *Store) GetEarliestSiigoDate() (string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	earliest := ""
+	updateEarliest := func(date string) {
+		if date != "" && (earliest == "" || date < earliest) {
+			earliest = date
+		}
+	}
 	for _, t := range s.transactions {
-		if t.Source != domain.SourceSIIGO {
-			continue
+		if t.Source == domain.SourceSIIGO {
+			updateEarliest(t.Date)
 		}
-		if earliest == "" || t.Date < earliest {
-			earliest = t.Date
-		}
+	}
+	for _, inv := range s.invoices {
+		updateEarliest(inv.Date)
+	}
+	for _, pur := range s.purchases {
+		updateEarliest(pur.Date)
 	}
 	return earliest, nil
 }
@@ -507,15 +518,19 @@ func (s *Store) GetOldestPendingOrPartialDate() (string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	oldest := ""
-	for _, t := range s.transactions {
-		if t.IsProjection {
-			continue
+	updateOldest := func(date string) {
+		if date != "" && (oldest == "" || date < oldest) {
+			oldest = date
 		}
-		if t.Status != domain.StatusPending && t.Status != domain.StatusPartial {
-			continue
+	}
+	for _, inv := range s.invoices {
+		if inv.Status == domain.StatusPending || inv.Status == domain.StatusPartial {
+			updateOldest(inv.Date)
 		}
-		if oldest == "" || t.Date < oldest {
-			oldest = t.Date
+	}
+	for _, pur := range s.purchases {
+		if pur.Status == domain.StatusPending || pur.Status == domain.StatusPartial {
+			updateOldest(pur.Date)
 		}
 	}
 	return oldest, nil
@@ -539,4 +554,114 @@ func (s *Store) SetBankBalance(b domain.BankBalance) error {
 	s.bankBalance = &cp
 	s.mu.Unlock()
 	return nil
+}
+
+// ── Invoices ──────────────────────────────────────────────────────────────────
+
+func (s *Store) GetAllInvoices() ([]*domain.Invoice, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	list := make([]*domain.Invoice, 0, len(s.invoices))
+	for _, inv := range s.invoices {
+		cp := *inv
+		list = append(list, &cp)
+	}
+	return list, nil
+}
+
+func (s *Store) GetInvoiceByID(id string) (*domain.Invoice, bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	inv, ok := s.invoices[id]
+	if !ok {
+		return nil, false, nil
+	}
+	cp := *inv
+	return &cp, true, nil
+}
+
+func (s *Store) UpsertInvoice(inv *domain.Invoice) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, existing := range s.invoices {
+		if existing.ExternalID == inv.ExternalID {
+			existing.Date = inv.Date
+			existing.DueDate = inv.DueDate
+			existing.CustomerIdentification = inv.CustomerIdentification
+			existing.CustomerName = inv.CustomerName
+			existing.Total = inv.Total
+			existing.Balance = inv.Balance
+			existing.Status = inv.Status
+			existing.Category = inv.Category
+			existing.Detail = inv.Detail
+			existing.SyncedAt = time.Now()
+			existing.UpdatedAt = time.Now()
+			s.invoices[id] = existing
+			inv.ID = id
+			return false, nil
+		}
+	}
+	inv.ID = uuid.NewString()
+	now := time.Now()
+	inv.SyncedAt = now
+	inv.CreatedAt = now
+	inv.UpdatedAt = now
+	cp := *inv
+	s.invoices[inv.ID] = &cp
+	return true, nil
+}
+
+// ── Purchases ─────────────────────────────────────────────────────────────────
+
+func (s *Store) GetAllPurchases() ([]*domain.Purchase, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	list := make([]*domain.Purchase, 0, len(s.purchases))
+	for _, pur := range s.purchases {
+		cp := *pur
+		list = append(list, &cp)
+	}
+	return list, nil
+}
+
+func (s *Store) GetPurchaseByID(id string) (*domain.Purchase, bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	pur, ok := s.purchases[id]
+	if !ok {
+		return nil, false, nil
+	}
+	cp := *pur
+	return &cp, true, nil
+}
+
+func (s *Store) UpsertPurchase(pur *domain.Purchase) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, existing := range s.purchases {
+		if existing.ExternalID == pur.ExternalID {
+			existing.Date = pur.Date
+			existing.DueDate = pur.DueDate
+			existing.ProviderIdentification = pur.ProviderIdentification
+			existing.ProviderName = pur.ProviderName
+			existing.Total = pur.Total
+			existing.Balance = pur.Balance
+			existing.Status = pur.Status
+			existing.Category = pur.Category
+			existing.Detail = pur.Detail
+			existing.SyncedAt = time.Now()
+			existing.UpdatedAt = time.Now()
+			s.purchases[id] = existing
+			pur.ID = id
+			return false, nil
+		}
+	}
+	pur.ID = uuid.NewString()
+	now := time.Now()
+	pur.SyncedAt = now
+	pur.CreatedAt = now
+	pur.UpdatedAt = now
+	cp := *pur
+	s.purchases[pur.ID] = &cp
+	return true, nil
 }

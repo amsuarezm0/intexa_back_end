@@ -32,9 +32,9 @@ func bg() context.Context { return context.Background() }
 
 func (s *Store) GetAllTransactions() ([]*domain.Transaction, error) {
 	rows, err := s.pool.Query(bg(), `
-		SELECT id, date::TEXT, description, category, type, amount, COALESCE(balance,0), status,
+		SELECT id, date::TEXT, description, category, type, amount, status,
 		       COALESCE(reference,''), COALESCE(detail,''), source, COALESCE(external_id,''),
-		       COALESCE(parent_id::TEXT,''), is_projection, created_at, updated_at
+		       is_projection, created_at, updated_at
 		FROM   transactions
 		ORDER  BY created_at DESC`)
 	if err != nil {
@@ -46,9 +46,9 @@ func (s *Store) GetAllTransactions() ([]*domain.Transaction, error) {
 
 func (s *Store) GetTransactionByID(id string) (*domain.Transaction, bool, error) {
 	row := s.pool.QueryRow(bg(), `
-		SELECT id, date::TEXT, description, category, type, amount, COALESCE(balance,0), status,
+		SELECT id, date::TEXT, description, category, type, amount, status,
 		       COALESCE(reference,''), COALESCE(detail,''), source, COALESCE(external_id,''),
-		       COALESCE(parent_id::TEXT,''), is_projection, created_at, updated_at
+		       is_projection, created_at, updated_at
 		FROM   transactions WHERE id = $1`, id)
 	t, err := scanTransaction(row)
 	if err == pgx.ErrNoRows {
@@ -61,36 +61,32 @@ func (s *Store) CreateTransaction(t *domain.Transaction) error {
 	t.ID = uuid.NewString()
 	return s.pool.QueryRow(bg(), `
 		INSERT INTO transactions
-		  (id, date, description, category, type, amount, balance, status, reference, detail, source, external_id, is_projection)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NULLIF($9,''),$10,$11,NULLIF($12,''),$13)
+		  (id, date, description, category, type, amount, status, reference, detail, source, external_id, is_projection)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,NULLIF($8,''),$9,$10,NULLIF($11,''),$12)
 		RETURNING created_at, updated_at`,
 		t.ID, parseDate(t.Date), t.Description, t.Category, string(t.Type),
-		t.Amount, t.Balance, string(t.Status), t.Reference, t.Detail, string(t.Source),
+		t.Amount, string(t.Status), t.Reference, t.Detail, string(t.Source),
 		t.ExternalID, t.IsProjection,
 	).Scan(&t.CreatedAt, &t.UpdatedAt)
 }
 
-// ImportTransaction upserts a Siigo transaction by external_id.
-// Returns true if the row was inserted (new), false if it already existed and was updated.
-// After the call, t.ID is set to the actual row ID (whether inserted or updated).
+// ImportTransaction upserts a Siigo transaction (RC/RP) by external_id.
+// Returns true if the row was inserted (new), false if updated.
+// After the call, t.ID is set to the actual row ID.
 func (s *Store) ImportTransaction(t *domain.Transaction) (bool, error) {
 	newID := uuid.NewString()
-	var parentID *string
-	if t.ParentID != "" {
-		parentID = &t.ParentID
-	}
 	var actualID string
 	var inserted bool
 	err := s.pool.QueryRow(bg(), `
 		INSERT INTO transactions
-		  (id, date, description, category, type, amount, balance, status, reference, detail, source, external_id, parent_id, is_projection)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NULLIF($9,''),$10,$11,NULLIF($12,''),$13,$14)
+		  (id, date, description, category, type, amount, status, reference, detail, source, external_id, is_projection)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,NULLIF($8,''),$9,$10,NULLIF($11,''),$12)
 		ON CONFLICT (external_id) DO UPDATE
-		  SET date=$2, description=$3, category=$4, amount=$6, balance=$7, status=$8, detail=$10, updated_at=now()
+		  SET date=$2, description=$3, category=$4, amount=$6, status=$7, detail=$9, updated_at=now()
 		RETURNING id, (xmax = 0) AS inserted, created_at, updated_at`,
 		newID, parseDate(t.Date), t.Description, t.Category, string(t.Type),
-		t.Amount, t.Balance, string(t.Status), t.Reference, t.Detail, string(t.Source),
-		t.ExternalID, parentID, t.IsProjection,
+		t.Amount, string(t.Status), t.Reference, t.Detail, string(t.Source),
+		t.ExternalID, t.IsProjection,
 	).Scan(&actualID, &inserted, &t.CreatedAt, &t.UpdatedAt)
 	t.ID = actualID
 	return inserted, err
@@ -457,7 +453,13 @@ func (s *Store) UpdateSiigoLastSync(t time.Time) error {
 func (s *Store) GetEarliestSiigoDate() (string, error) {
 	var d string
 	err := s.pool.QueryRow(bg(), `
-		SELECT TO_CHAR(MIN(date), 'YYYY-MM-DD') FROM transactions WHERE source = 'Siigo'`,
+		SELECT TO_CHAR(MIN(min_date), 'YYYY-MM-DD') FROM (
+			SELECT MIN(date) AS min_date FROM transactions WHERE source = 'Siigo'
+			UNION ALL
+			SELECT MIN(date) FROM invoices
+			UNION ALL
+			SELECT MIN(date) FROM purchases
+		) sub`,
 	).Scan(&d)
 	if err != nil {
 		return "", err
@@ -468,10 +470,11 @@ func (s *Store) GetEarliestSiigoDate() (string, error) {
 func (s *Store) GetOldestPendingOrPartialDate() (string, error) {
 	var d string
 	err := s.pool.QueryRow(bg(), `
-		SELECT TO_CHAR(MIN(date), 'YYYY-MM-DD')
-		FROM transactions
-		WHERE status IN ('Pendiente', 'Parcial')
-		  AND is_projection = false`,
+		SELECT TO_CHAR(MIN(min_date), 'YYYY-MM-DD') FROM (
+			SELECT MIN(date) AS min_date FROM invoices  WHERE status IN ('Pendiente', 'Parcial')
+			UNION ALL
+			SELECT MIN(date) FROM purchases WHERE status IN ('Pendiente', 'Parcial')
+		) sub`,
 	).Scan(&d)
 	if err != nil {
 		return "", err
@@ -505,6 +508,132 @@ func (s *Store) SetBankBalance(b domain.BankBalance) error {
 	return err
 }
 
+// ── Invoices ──────────────────────────────────────────────────────────────────
+
+const invoiceCols = `
+	id, external_id, source, is_projection,
+	COALESCE(prefix,''), COALESCE(number,0), date::TEXT, COALESCE(due_date::TEXT,''),
+	COALESCE(customer_identification,''), COALESCE(customer_name,''),
+	total, balance, status, category, COALESCE(detail,''),
+	synced_at, created_at, updated_at`
+
+func (s *Store) GetAllInvoices() ([]*domain.Invoice, error) {
+	rows, err := s.pool.Query(bg(), `SELECT`+invoiceCols+`FROM invoices ORDER BY date DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanInvoices(rows)
+}
+
+func (s *Store) GetInvoiceByID(id string) (*domain.Invoice, bool, error) {
+	row := s.pool.QueryRow(bg(), `SELECT`+invoiceCols+`FROM invoices WHERE id=$1`, id)
+	inv, err := scanInvoice(row)
+	if err == pgx.ErrNoRows {
+		return nil, false, nil
+	}
+	return inv, err == nil, err
+}
+
+func (s *Store) UpsertInvoice(inv *domain.Invoice) (bool, error) {
+	newID := uuid.NewString()
+	var prefix *string
+	if inv.Prefix != "" {
+		prefix = &inv.Prefix
+	}
+	var number *int
+	if inv.Number != 0 {
+		number = &inv.Number
+	}
+	var dueDate *string
+	if inv.DueDate != "" {
+		dueDate = &inv.DueDate
+	}
+	var actualID string
+	var inserted bool
+	err := s.pool.QueryRow(bg(), `
+		INSERT INTO invoices
+		  (id, external_id, source, is_projection, prefix, number, date, due_date,
+		   customer_identification, customer_name, total, balance, status, category, detail, synced_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NULLIF($9,''),NULLIF($10,''),$11,$12,$13,$14,$15,now())
+		ON CONFLICT (external_id) DO UPDATE
+		  SET date=$7, due_date=$8,
+		      customer_identification=NULLIF($9,''), customer_name=NULLIF($10,''),
+		      total=$11, balance=$12, status=$13, category=$14, detail=$15,
+		      synced_at=now(), updated_at=now()
+		RETURNING id, (xmax = 0) AS inserted, created_at, updated_at, synced_at`,
+		newID, inv.ExternalID, inv.Source, inv.IsProjection,
+		prefix, number, parseDate(inv.Date), dueDate,
+		inv.CustomerIdentification, inv.CustomerName,
+		inv.Total, inv.Balance, string(inv.Status), inv.Category, inv.Detail,
+	).Scan(&actualID, &inserted, &inv.CreatedAt, &inv.UpdatedAt, &inv.SyncedAt)
+	inv.ID = actualID
+	return inserted, err
+}
+
+// ── Purchases ─────────────────────────────────────────────────────────────────
+
+const purchaseCols = `
+	id, external_id, source, is_projection,
+	COALESCE(prefix,''), COALESCE(number,0), date::TEXT, COALESCE(due_date::TEXT,''),
+	COALESCE(provider_identification,''), COALESCE(provider_name,''),
+	total, balance, status, category, COALESCE(detail,''),
+	synced_at, created_at, updated_at`
+
+func (s *Store) GetAllPurchases() ([]*domain.Purchase, error) {
+	rows, err := s.pool.Query(bg(), `SELECT`+purchaseCols+`FROM purchases ORDER BY date DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanPurchases(rows)
+}
+
+func (s *Store) GetPurchaseByID(id string) (*domain.Purchase, bool, error) {
+	row := s.pool.QueryRow(bg(), `SELECT`+purchaseCols+`FROM purchases WHERE id=$1`, id)
+	pur, err := scanPurchase(row)
+	if err == pgx.ErrNoRows {
+		return nil, false, nil
+	}
+	return pur, err == nil, err
+}
+
+func (s *Store) UpsertPurchase(pur *domain.Purchase) (bool, error) {
+	newID := uuid.NewString()
+	var prefix *string
+	if pur.Prefix != "" {
+		prefix = &pur.Prefix
+	}
+	var number *int
+	if pur.Number != 0 {
+		number = &pur.Number
+	}
+	var dueDate *string
+	if pur.DueDate != "" {
+		dueDate = &pur.DueDate
+	}
+	var actualID string
+	var inserted bool
+	err := s.pool.QueryRow(bg(), `
+		INSERT INTO purchases
+		  (id, external_id, source, is_projection, prefix, number, date, due_date,
+		   provider_identification, provider_name, total, balance, status, category, detail, synced_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NULLIF($9,''),NULLIF($10,''),$11,$12,$13,$14,$15,now())
+		ON CONFLICT (external_id) DO UPDATE
+		  SET date=$7, due_date=$8,
+		      provider_identification=NULLIF($9,''), provider_name=NULLIF($10,''),
+		      total=$11, balance=$12, status=$13, category=$14, detail=$15,
+		      synced_at=now(), updated_at=now()
+		RETURNING id, (xmax = 0) AS inserted, created_at, updated_at, synced_at`,
+		newID, pur.ExternalID, pur.Source, pur.IsProjection,
+		prefix, number, parseDate(pur.Date), dueDate,
+		pur.ProviderIdentification, pur.ProviderName,
+		pur.Total, pur.Balance, string(pur.Status), pur.Category, pur.Detail,
+	).Scan(&actualID, &inserted, &pur.CreatedAt, &pur.UpdatedAt, &pur.SyncedAt)
+	pur.ID = actualID
+	return inserted, err
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 type scanner interface {
@@ -515,8 +644,8 @@ func scanTransaction(row scanner) (*domain.Transaction, error) {
 	var t domain.Transaction
 	var txType, txStatus, txSource string
 	err := row.Scan(&t.ID, &t.Date, &t.Description, &t.Category,
-		&txType, &t.Amount, &t.Balance, &txStatus, &t.Reference, &t.Detail,
-		&txSource, &t.ExternalID, &t.ParentID, &t.IsProjection,
+		&txType, &t.Amount, &txStatus, &t.Reference, &t.Detail,
+		&txSource, &t.ExternalID, &t.IsProjection,
 		&t.CreatedAt, &t.UpdatedAt)
 	if err != nil {
 		return nil, err
@@ -549,6 +678,64 @@ func scanUser(row scanner) (*domain.User, error) {
 	}
 	u.Role = domain.UserRole(role)
 	return &u, nil
+}
+
+func scanInvoice(row scanner) (*domain.Invoice, error) {
+	var inv domain.Invoice
+	var status string
+	err := row.Scan(
+		&inv.ID, &inv.ExternalID, &inv.Source, &inv.IsProjection,
+		&inv.Prefix, &inv.Number, &inv.Date, &inv.DueDate,
+		&inv.CustomerIdentification, &inv.CustomerName,
+		&inv.Total, &inv.Balance, &status, &inv.Category, &inv.Detail,
+		&inv.SyncedAt, &inv.CreatedAt, &inv.UpdatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	inv.Status = domain.TransactionStatus(status)
+	return &inv, nil
+}
+
+func scanInvoices(rows pgx.Rows) ([]*domain.Invoice, error) {
+	list := make([]*domain.Invoice, 0)
+	for rows.Next() {
+		inv, err := scanInvoice(rows)
+		if err != nil {
+			return nil, err
+		}
+		list = append(list, inv)
+	}
+	return list, rows.Err()
+}
+
+func scanPurchase(row scanner) (*domain.Purchase, error) {
+	var pur domain.Purchase
+	var status string
+	err := row.Scan(
+		&pur.ID, &pur.ExternalID, &pur.Source, &pur.IsProjection,
+		&pur.Prefix, &pur.Number, &pur.Date, &pur.DueDate,
+		&pur.ProviderIdentification, &pur.ProviderName,
+		&pur.Total, &pur.Balance, &status, &pur.Category, &pur.Detail,
+		&pur.SyncedAt, &pur.CreatedAt, &pur.UpdatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	pur.Status = domain.TransactionStatus(status)
+	return &pur, nil
+}
+
+func scanPurchases(rows pgx.Rows) ([]*domain.Purchase, error) {
+	list := make([]*domain.Purchase, 0)
+	for rows.Next() {
+		pur, err := scanPurchase(rows)
+		if err != nil {
+			return nil, err
+		}
+		list = append(list, pur)
+	}
+	return list, rows.Err()
 }
 
 // parseDate parses human-readable dates ("02 Jan, 2006") or ISO dates ("2006-01-02").

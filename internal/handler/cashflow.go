@@ -26,6 +26,16 @@ func (h *CashFlowHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
+	invoices, err := h.store.GetAllInvoices()
+	if err != nil {
+		jsonError(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	purchases, err := h.store.GetAllPurchases()
+	if err != nil {
+		jsonError(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
 	now := time.Now()
 
 	// ── Last 7 days (cash received/paid only) ────────────────────────────────
@@ -38,16 +48,16 @@ func (h *CashFlowHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 			if t.IsProjection {
 				continue
 			}
-			r := receivedAmount(t)
-			if r == 0 {
+			rec := receivedAmount(t)
+			if rec == 0 {
 				continue
 			}
 			ty, tm, td := txDate(t)
 			if ty == dy && tm == dm && td == dd {
 				if t.Type == domain.TypeIngreso {
-					ing += r
+					ing += rec
 				} else {
-					egr += r
+					egr += rec
 				}
 			}
 		}
@@ -59,29 +69,51 @@ func (h *CashFlowHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// ── Projected balance = cash received to date ± expected flows within 30 days ──
-	// currentBalance already uses cash-basis (receivedAmount), so Pendiente and
-	// remaining Parcial balances are not yet counted — we add them here.
+	// ── Projected balance = real cash ± pending invoices/purchases within 30 days ──
 	balance := currentBalance(all)
 	horizon := now.AddDate(0, 0, 30)
 	var pendingInc, pendingExp float64
+
+	parseDate := func(s string) (time.Time, bool) {
+		t, err := time.Parse("2006-01-02", s)
+		return t, err == nil
+	}
+
+	for _, inv := range invoices {
+		if inv.Status == domain.StatusCompleted || inv.Status == domain.StatusCancelled {
+			continue
+		}
+		dateStr := inv.DueDate
+		if dateStr == "" {
+			dateStr = inv.Date
+		}
+		if d, ok := parseDate(dateStr); ok && !d.After(horizon) {
+			pendingInc += inv.Balance
+		}
+	}
+	for _, pur := range purchases {
+		if pur.Status == domain.StatusCompleted || pur.Status == domain.StatusCancelled {
+			continue
+		}
+		dateStr := pur.DueDate
+		if dateStr == "" {
+			dateStr = pur.Date
+		}
+		if d, ok := parseDate(dateStr); ok && !d.After(horizon) {
+			pendingExp += pur.Balance
+		}
+	}
+	// Manual projections in transactions
 	for _, t := range all {
-		if t.IsProjection {
+		if !t.IsProjection || t.Status == domain.StatusCancelled {
 			continue
 		}
-		owed := pendingAmount(t)
-		if owed == 0 {
-			continue
-		}
-		ty, tm, td := txDate(t)
-		tDate := time.Date(ty, tm, td, 0, 0, 0, 0, now.Location())
-		if tDate.After(horizon) {
-			continue
-		}
-		if t.Type == domain.TypeIngreso {
-			pendingInc += owed
-		} else {
-			pendingExp += owed
+		if d, ok := parseDate(t.Date); ok && !d.After(horizon) {
+			if t.Type == domain.TypeIngreso {
+				pendingInc += t.Amount
+			} else {
+				pendingExp += t.Amount
+			}
 		}
 	}
 	projected := balance + pendingInc - pendingExp
@@ -105,35 +137,48 @@ func (h *CashFlowHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// ── Alerts: pending and partial transactions ──────────────────────────────
+	// ── Alerts: pending invoices (FV) and purchases (FC) ─────────────────────
 	alerts := []domain.Alert{}
-	for _, t := range all {
-		if t.IsProjection {
+	for _, inv := range invoices {
+		if inv.Status == domain.StatusCompleted || inv.Status == domain.StatusCancelled {
 			continue
 		}
-		owed := pendingAmount(t)
-		if owed == 0 {
-			continue
-		}
-		kind := "success"
 		title := "Cobro Pendiente"
-		if t.Status == domain.StatusPartial {
+		if inv.Status == domain.StatusPartial {
 			title = "Cobro Parcial"
 		}
-		if t.Type == domain.TypeEgreso {
-			kind = "danger"
-			title = "Pago Pendiente"
-			if t.Status == domain.StatusPartial {
-				title = "Pago Parcial"
-			}
+		dueDate := inv.DueDate
+		if dueDate == "" {
+			dueDate = inv.Date
 		}
 		alerts = append(alerts, domain.Alert{
-			ID:          t.ID,
-			Type:        kind,
+			ID:          inv.ID,
+			Type:        "success",
 			Title:       title,
-			Description: t.Description,
-			Amount:      owed,
-			DueDate:     t.Date,
+			Description: inv.CustomerName,
+			Amount:      inv.Balance,
+			DueDate:     dueDate,
+		})
+	}
+	for _, pur := range purchases {
+		if pur.Status == domain.StatusCompleted || pur.Status == domain.StatusCancelled {
+			continue
+		}
+		title := "Pago Pendiente"
+		if pur.Status == domain.StatusPartial {
+			title = "Pago Parcial"
+		}
+		dueDate := pur.DueDate
+		if dueDate == "" {
+			dueDate = pur.Date
+		}
+		alerts = append(alerts, domain.Alert{
+			ID:          pur.ID,
+			Type:        "danger",
+			Title:       title,
+			Description: pur.ProviderName,
+			Amount:      pur.Balance,
+			DueDate:     dueDate,
 		})
 	}
 	sort.Slice(alerts, func(i, j int) bool { return alerts[i].Amount > alerts[j].Amount })

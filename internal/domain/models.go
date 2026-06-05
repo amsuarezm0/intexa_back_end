@@ -31,16 +31,56 @@ type Transaction struct {
 	Category     string            `json:"category"`
 	Type         TransactionType   `json:"type"`
 	Amount       float64           `json:"amount"`
-	Balance      float64           `json:"balance,omitempty"` // remaining unpaid amount (Siigo)
 	Status       TransactionStatus `json:"status"`
 	Reference    string            `json:"reference,omitempty"`
 	Detail       string            `json:"detail,omitempty"`
 	Source       TransactionSource `json:"source"`
 	ExternalID   string            `json:"externalId,omitempty"`
-	ParentID     string            `json:"parentId,omitempty"` // set on payment-term projections
 	IsProjection bool              `json:"isProjection"`
 	CreatedAt    time.Time         `json:"createdAt"`
 	UpdatedAt    time.Time         `json:"updatedAt"`
+}
+
+type Invoice struct {
+	ID                     string            `json:"id"`
+	ExternalID             string            `json:"externalId"`
+	Source                 string            `json:"source"`
+	IsProjection           bool              `json:"isProjection"`
+	Prefix                 string            `json:"prefix,omitempty"`
+	Number                 int               `json:"number,omitempty"`
+	Date                   string            `json:"date"`
+	DueDate                string            `json:"dueDate,omitempty"`
+	CustomerIdentification string            `json:"customerIdentification,omitempty"`
+	CustomerName           string            `json:"customerName,omitempty"`
+	Total                  float64           `json:"total"`
+	Balance                float64           `json:"balance"`
+	Status                 TransactionStatus `json:"status"`
+	Category               string            `json:"category"`
+	Detail                 string            `json:"detail,omitempty"`
+	SyncedAt               time.Time         `json:"syncedAt"`
+	CreatedAt              time.Time         `json:"createdAt"`
+	UpdatedAt              time.Time         `json:"updatedAt"`
+}
+
+type Purchase struct {
+	ID                     string            `json:"id"`
+	ExternalID             string            `json:"externalId"`
+	Source                 string            `json:"source"`
+	IsProjection           bool              `json:"isProjection"`
+	Prefix                 string            `json:"prefix,omitempty"`
+	Number                 int               `json:"number,omitempty"`
+	Date                   string            `json:"date"`
+	DueDate                string            `json:"dueDate,omitempty"`
+	ProviderIdentification string            `json:"providerIdentification,omitempty"`
+	ProviderName           string            `json:"providerName,omitempty"`
+	Total                  float64           `json:"total"`
+	Balance                float64           `json:"balance"`
+	Status                 TransactionStatus `json:"status"`
+	Category               string            `json:"category"`
+	Detail                 string            `json:"detail,omitempty"`
+	SyncedAt               time.Time         `json:"syncedAt"`
+	CreatedAt              time.Time         `json:"createdAt"`
+	UpdatedAt              time.Time         `json:"updatedAt"`
 }
 
 type User struct {
@@ -235,12 +275,14 @@ type SiigoSyncRequest struct {
 }
 
 type SiigoSyncResult struct {
-	Mode              SiigoSyncMode `json:"mode"`
-	DateStart         string        `json:"dateStart"`
-	DateEnd           string        `json:"dateEnd"`
-	InvoicesImported  int           `json:"invoicesImported"`
-	PurchasesImported int           `json:"purchasesImported"`
-	Updated           int           `json:"updated"`
+	Mode                    SiigoSyncMode `json:"mode"`
+	DateStart               string        `json:"dateStart"`
+	DateEnd                 string        `json:"dateEnd"`
+	InvoicesImported        int           `json:"invoicesImported"`
+	PurchasesImported       int           `json:"purchasesImported"`
+	VouchersImported        int           `json:"vouchersImported"`
+	PaymentReceiptsImported int           `json:"paymentReceiptsImported"`
+	Updated                 int           `json:"updated"`
 }
 
 type ActivityLog struct {
@@ -269,6 +311,22 @@ type TransactionListResponse struct {
 	Page       int           `json:"page"`
 	Limit      int           `json:"limit"`
 	TotalPages int           `json:"totalPages"`
+}
+
+type InvoiceListResponse struct {
+	Data       []Invoice `json:"data"`
+	Total      int       `json:"total"`
+	Page       int       `json:"page"`
+	Limit      int       `json:"limit"`
+	TotalPages int       `json:"totalPages"`
+}
+
+type PurchaseListResponse struct {
+	Data       []Purchase `json:"data"`
+	Total      int        `json:"total"`
+	Page       int        `json:"page"`
+	Limit      int        `json:"limit"`
+	TotalPages int        `json:"totalPages"`
 }
 
 type TransactionSummary struct {

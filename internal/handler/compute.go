@@ -50,30 +50,22 @@ func signedPct(current, previous float64) string {
 	return fmt.Sprintf("%.1f%%", d)
 }
 
-// receivedAmount returns the cash actually received/paid for t on a cash basis:
-// Completado → full Amount; Parcial → Amount minus remaining Balance; otherwise 0.
+// receivedAmount returns the cash actually received/paid for t on a cash basis.
+// Transactions use only Completado / Pendiente / Anulado — no partial balance.
 func receivedAmount(t *domain.Transaction) float64 {
-	switch t.Status {
-	case domain.StatusCompleted:
+	if t.Status == domain.StatusCompleted {
 		return t.Amount
-	case domain.StatusPartial:
-		return t.Amount - t.Balance
-	default:
-		return 0
 	}
+	return 0
 }
 
-// pendingAmount returns the cash still owed/expected from t:
-// Pendiente → full Amount; Parcial → remaining Balance; otherwise 0.
+// pendingAmount returns the cash still owed/expected from t.
+// For transactions this is non-zero only for Pendiente status (manual projections).
 func pendingAmount(t *domain.Transaction) float64 {
-	switch t.Status {
-	case domain.StatusPending:
+	if t.Status == domain.StatusPending {
 		return t.Amount
-	case domain.StatusPartial:
-		return t.Balance
-	default:
-		return 0
 	}
+	return 0
 }
 
 // currentBalance returns the net cash actually received to date (cash basis).
@@ -233,15 +225,11 @@ func pendingAlerts(txs []*domain.Transaction, now time.Time, minAgeDays, maxCoun
 		if ageDays > 10 {
 			kind = "danger"
 		}
-		label := "Pendiente"
-		if t.Status == domain.StatusPartial {
-			label = "Parcial"
-		}
 		alerts = append(alerts, domain.Alert{
 			ID:          t.ID,
 			Type:        kind,
 			Title:       t.Description,
-			Description: fmt.Sprintf("%s hace %d días · %s", label, ageDays, t.Category),
+			Description: fmt.Sprintf("Pendiente hace %d días · %s", ageDays, t.Category),
 			Amount:      owed,
 			DueDate:     t.Date,
 		})

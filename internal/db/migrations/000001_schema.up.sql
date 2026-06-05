@@ -69,14 +69,12 @@ CREATE TABLE IF NOT EXISTS transactions (
     category      TEXT          NOT NULL,
     type          TEXT          NOT NULL CHECK (type IN ('Ingreso', 'Egreso')),
     amount        NUMERIC(18,2) NOT NULL,
-    balance       NUMERIC(18,2) NOT NULL DEFAULT 0,
-    status        TEXT          NOT NULL DEFAULT 'Pendiente'
-                                CHECK (status IN ('Completado', 'Pendiente', 'Anulado', 'Parcial')),
+    status        TEXT          NOT NULL DEFAULT 'Completado'
+                                CHECK (status IN ('Completado', 'Pendiente', 'Anulado')),
     reference     TEXT,
     source        TEXT          NOT NULL DEFAULT 'Manual'
                                 CHECK (source IN ('Siigo', 'Manual')),
     external_id   TEXT          UNIQUE,
-    parent_id     UUID          REFERENCES transactions(id) ON DELETE CASCADE,
     is_projection BOOLEAN       NOT NULL DEFAULT false,
     created_by    UUID          REFERENCES users(id) ON DELETE SET NULL,
     created_at    TIMESTAMPTZ   NOT NULL DEFAULT now(),

@@ -33,36 +33,19 @@ func (h *ProjectionsHandler) GetSummary(w http.ResponseWriter, r *http.Request) 
 		jsonError(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
+	invoices, err := h.store.GetAllInvoices()
+	if err != nil {
+		jsonError(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	purchases, err := h.store.GetAllPurchases()
+	if err != nil {
+		jsonError(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
 	now := time.Now().Truncate(24 * time.Hour)
 	balance := currentBalance(all)
-
-	// Index all transactions for O(1) parent lookup.
-	txByID := make(map[string]*domain.Transaction, len(all))
-	for _, t := range all {
-		txByID[t.ID] = t
-	}
-
-	// Group payment-term projections by parent ID, sorted by due date (earliest first).
-	type ptEntry struct {
-		tx      *domain.Transaction
-		dueDate time.Time
-	}
-	parentToTerms := map[string][]ptEntry{}
-	for _, t := range all {
-		if t.ParentID == "" || !t.IsProjection {
-			continue
-		}
-		d, err := time.Parse("2006-01-02", t.Date)
-		if err != nil {
-			continue
-		}
-		parentToTerms[t.ParentID] = append(parentToTerms[t.ParentID], ptEntry{t, d})
-	}
-	for pid := range parentToTerms {
-		terms := parentToTerms[pid]
-		sort.Slice(terms, func(i, j int) bool { return terms[i].dueDate.Before(terms[j].dueDate) })
-		parentToTerms[pid] = terms
-	}
 
 	dailyNet := map[int]float64{}
 	var projInc, projExp float64
@@ -89,52 +72,48 @@ func (h *ProjectionsHandler) GetSummary(w http.ResponseWriter, r *http.Request) 
 		return n, true
 	}
 
-	// Single-payment transactions: pending or partial, no payment-term children.
-	for _, t := range all {
-		if t.Status == domain.StatusCompleted || t.Status == domain.StatusCancelled {
+	// Pending/partial invoices (FV) → income projections.
+	for _, inv := range invoices {
+		if inv.Status == domain.StatusCompleted || inv.Status == domain.StatusCancelled {
 			continue
 		}
-		if t.ParentID != "" && t.IsProjection {
-			continue // handled via parent below
+		dateStr := inv.DueDate
+		if dateStr == "" {
+			dateStr = inv.Date
 		}
-		if _, hasTerms := parentToTerms[t.ID]; hasTerms {
-			continue // handled via payment terms below
+		daysAway, ok := parseDaysAway(dateStr)
+		if !ok || daysAway > days {
+			continue
+		}
+		addFlow(domain.TypeIngreso, inv.Balance, daysAway)
+	}
+
+	// Pending/partial purchases (FC) → expense projections.
+	for _, pur := range purchases {
+		if pur.Status == domain.StatusCompleted || pur.Status == domain.StatusCancelled {
+			continue
+		}
+		dateStr := pur.DueDate
+		if dateStr == "" {
+			dateStr = pur.Date
+		}
+		daysAway, ok := parseDaysAway(dateStr)
+		if !ok || daysAway > days {
+			continue
+		}
+		addFlow(domain.TypeEgreso, pur.Balance, daysAway)
+	}
+
+	// Manual projections in transactions (is_projection=true).
+	for _, t := range all {
+		if !t.IsProjection || t.Status == domain.StatusCancelled {
+			continue
 		}
 		daysAway, ok := parseDaysAway(t.Date)
 		if !ok || daysAway > days {
 			continue
 		}
-		// Use remaining balance for partial invoices; full amount otherwise.
-		amount := t.Amount
-		if t.Balance > 0 {
-			amount = t.Balance
-		}
-		addFlow(t.Type, amount, daysAway)
-	}
-
-	// Multi-payment transactions: distribute remaining balance across installments (FIFO).
-	for parentID, terms := range parentToTerms {
-		parent, ok := txByID[parentID]
-		if !ok {
-			continue
-		}
-		if parent.Status == domain.StatusCompleted || parent.Status == domain.StatusCancelled {
-			continue
-		}
-		alreadyPaid := parent.Amount - parent.Balance
-		for _, pt := range terms {
-			if alreadyPaid >= pt.tx.Amount {
-				alreadyPaid -= pt.tx.Amount // this installment is covered by past payments
-				continue
-			}
-			effective := pt.tx.Amount - alreadyPaid
-			alreadyPaid = 0
-			daysAway, ok := parseDaysAway(pt.tx.Date)
-			if !ok || daysAway > days {
-				continue
-			}
-			addFlow(parent.Type, effective, daysAway)
-		}
+		addFlow(t.Type, t.Amount, daysAway)
 	}
 
 	// Build the running-balance chart.
@@ -162,7 +141,7 @@ func (h *ProjectionsHandler) GetSummary(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	// Alerts: show individual installments for multi-payment invoices, parent for single-payment.
+	// Build alerts — invoices first (income), then purchases (expense), then manual projections.
 	type entry struct {
 		alert    domain.ProjectionAlert
 		daysAway int
@@ -170,7 +149,76 @@ func (h *ProjectionsHandler) GetSummary(w http.ResponseWriter, r *http.Request) 
 	}
 	var entries []entry
 
-	addAlert := func(t *domain.Transaction, amount float64, daysAway int) {
+	for _, inv := range invoices {
+		if inv.Status == domain.StatusCompleted || inv.Status == domain.StatusCancelled {
+			continue
+		}
+		dateStr := inv.DueDate
+		if dateStr == "" {
+			dateStr = inv.Date
+		}
+		daysAway, ok := parseDaysAway(dateStr)
+		if !ok || daysAway > days {
+			continue
+		}
+		desc := inv.CustomerName
+		if desc == "" {
+			desc = inv.Category
+		}
+		entries = append(entries, entry{
+			alert: domain.ProjectionAlert{
+				ID:          inv.ID,
+				Icon:        "FileCheck",
+				Title:       inv.Detail,
+				Description: desc,
+				DueDate:     dateStr,
+				Amount:      inv.Balance,
+				Color:       "brand-success",
+			},
+			daysAway: daysAway,
+			amount:   inv.Balance,
+		})
+	}
+
+	for _, pur := range purchases {
+		if pur.Status == domain.StatusCompleted || pur.Status == domain.StatusCancelled {
+			continue
+		}
+		dateStr := pur.DueDate
+		if dateStr == "" {
+			dateStr = pur.Date
+		}
+		daysAway, ok := parseDaysAway(dateStr)
+		if !ok || daysAway > days {
+			continue
+		}
+		desc := pur.ProviderName
+		if desc == "" {
+			desc = pur.Category
+		}
+		entries = append(entries, entry{
+			alert: domain.ProjectionAlert{
+				ID:          pur.ID,
+				Icon:        "AlertCircle",
+				Title:       pur.Detail,
+				Description: desc,
+				DueDate:     dateStr,
+				Amount:      pur.Balance,
+				Color:       "brand-danger",
+			},
+			daysAway: daysAway,
+			amount:   pur.Balance,
+		})
+	}
+
+	for _, t := range all {
+		if !t.IsProjection || t.Status == domain.StatusCancelled {
+			continue
+		}
+		daysAway, ok := parseDaysAway(t.Date)
+		if !ok || daysAway > days {
+			continue
+		}
 		color, icon := "brand-success", "FileCheck"
 		if t.Type == domain.TypeEgreso {
 			color, icon = "brand-danger", "AlertCircle"
@@ -181,58 +229,13 @@ func (h *ProjectionsHandler) GetSummary(w http.ResponseWriter, r *http.Request) 
 				Icon:        icon,
 				Title:       t.Description,
 				Description: t.Category,
-				DueDate:     t.Date, // ISO YYYY-MM-DD
-				Amount:      amount,
+				DueDate:     t.Date,
+				Amount:      t.Amount,
 				Color:       color,
 			},
 			daysAway: daysAway,
-			amount:   amount,
+			amount:   t.Amount,
 		})
-	}
-
-	for _, t := range all {
-		if t.Status == domain.StatusCompleted || t.Status == domain.StatusCancelled {
-			continue
-		}
-		if t.ParentID != "" && t.IsProjection {
-			continue
-		}
-		if _, hasTerms := parentToTerms[t.ID]; hasTerms {
-			continue
-		}
-		daysAway, ok := parseDaysAway(t.Date)
-		if !ok || daysAway > days {
-			continue
-		}
-		amount := t.Amount
-		if t.Balance > 0 {
-			amount = t.Balance
-		}
-		addAlert(t, amount, daysAway)
-	}
-
-	for parentID, terms := range parentToTerms {
-		parent, ok := txByID[parentID]
-		if !ok {
-			continue
-		}
-		if parent.Status == domain.StatusCompleted || parent.Status == domain.StatusCancelled {
-			continue
-		}
-		alreadyPaid := parent.Amount - parent.Balance
-		for _, pt := range terms {
-			if alreadyPaid >= pt.tx.Amount {
-				alreadyPaid -= pt.tx.Amount
-				continue
-			}
-			effective := pt.tx.Amount - alreadyPaid
-			alreadyPaid = 0
-			daysAway, ok := parseDaysAway(pt.tx.Date)
-			if !ok || daysAway > days {
-				continue
-			}
-			addAlert(pt.tx, effective, daysAway)
-		}
 	}
 
 	sort.Slice(entries, func(i, j int) bool {
@@ -283,25 +286,44 @@ func (h *ProjectionsHandler) Simulate(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
+	invoices, err := h.store.GetAllInvoices()
+	if err != nil {
+		jsonError(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	purchases, err := h.store.GetAllPurchases()
+	if err != nil {
+		jsonError(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
 	base := currentBalance(all)
-	// Include pending and partial flows in base
+
+	// Add pending invoice/purchase balances.
+	for _, inv := range invoices {
+		if inv.Status != domain.StatusCompleted && inv.Status != domain.StatusCancelled {
+			base += inv.Balance
+		}
+	}
+	for _, pur := range purchases {
+		if pur.Status != domain.StatusCompleted && pur.Status != domain.StatusCancelled {
+			base -= pur.Balance
+		}
+	}
+
+	// Add manual projections in transactions.
 	for _, t := range all {
-		if t.IsProjection || (t.Status != domain.StatusPending && t.Status != domain.StatusPartial) {
+		if !t.IsProjection || t.Status == domain.StatusCancelled {
 			continue
 		}
-		amount := t.Amount
-		if t.Balance > 0 {
-			amount = t.Balance
-		}
 		if t.Type == domain.TypeIngreso {
-			base += amount
+			base += t.Amount
 		} else {
-			base -= amount
+			base -= t.Amount
 		}
 	}
 
 	impact := base * (req.SalesGrowth / 100)
-	// Each day of payment delay costs ~0.05% of base (working capital friction)
 	penalty := float64(req.PaymentDelay) * (math.Abs(base) * 0.0005)
 	projected := base + impact - penalty
 

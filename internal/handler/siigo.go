@@ -303,20 +303,23 @@ func (h *SiigoHandler) syncInvoices(client *siigopkg.Client, dateStart, dateEnd 
 			for _, it := range inv.Items {
 				itemDescs = append(itemDescs, strings.TrimSpace(it.Description))
 			}
-			t := &domain.Transaction{
-				Date:        inv.Date,
-				Description: desc,
-				Category:    categorizeInvoice(itemDescs, ""),
-				Type:        domain.TypeIngreso,
-				Amount:      inv.Total,
-				Balance:     inv.Balance,
-				Status:      invoiceStatus(inv.Balance, inv.Total),
-				Reference:   desc,
-				Detail:      strings.Join(itemDescs, " | "),
-				Source:      domain.SourceSIIGO,
-				ExternalID:  fmt.Sprintf("siigo-inv-%s", inv.ID),
+			record := &domain.Invoice{
+				ExternalID:             fmt.Sprintf("siigo-inv-%s", inv.ID),
+				Source:                 string(domain.SourceSIIGO),
+				IsProjection:           false,
+				Prefix:                 inv.Prefix,
+				Number:                 inv.Number,
+				Date:                   inv.Date,
+				DueDate:                inv.DueDate,
+				CustomerIdentification: inv.Customer.Identification,
+				CustomerName:           inv.Customer.Name,
+				Total:                  inv.Total,
+				Balance:                inv.Balance,
+				Status:                 invoiceStatus(inv.Balance, inv.Total),
+				Category:               categorizeInvoice(itemDescs, inv.Customer.Name),
+				Detail:                 desc + ifNonEmpty(" · ", strings.Join(itemDescs, " | ")),
 			}
-			inserted, err := h.store.ImportTransaction(t)
+			inserted, err := h.store.UpsertInvoice(record)
 			if err != nil {
 				return fmt.Errorf("saving invoice %s: %w", inv.ID, err)
 			}
@@ -324,9 +327,6 @@ func (h *SiigoHandler) syncInvoices(client *siigopkg.Client, dateStart, dateEnd 
 				result.InvoicesImported++
 			} else {
 				result.Updated++
-			}
-			if err := h.syncPaymentTerms(t.ID, desc, domain.TypeIngreso, t.Category, inv.Payments, "siigo-inv-"+inv.ID, result); err != nil {
-				return fmt.Errorf("saving payment terms for invoice %s: %w", inv.ID, err)
 			}
 		}
 		if page*siigoPageSize >= resp.Pagination.TotalResults {
@@ -354,20 +354,23 @@ func (h *SiigoHandler) syncPurchases(client *siigopkg.Client, dateStart, dateEnd
 			for _, it := range pur.Items {
 				itemDescs = append(itemDescs, strings.TrimSpace(it.Description))
 			}
-			t := &domain.Transaction{
-				Date:        pur.Date,
-				Description: desc,
-				Category:    categorizePurchase(itemDescs, ""),
-				Type:        domain.TypeEgreso,
-				Amount:      pur.Total,
-				Balance:     pur.Balance,
-				Status:      invoiceStatus(pur.Balance, pur.Total),
-				Reference:   desc,
-				Detail:      strings.Join(itemDescs, " | "),
-				Source:      domain.SourceSIIGO,
-				ExternalID:  fmt.Sprintf("siigo-pur-%s", pur.ID),
+			record := &domain.Purchase{
+				ExternalID:             fmt.Sprintf("siigo-pur-%s", pur.ID),
+				Source:                 string(domain.SourceSIIGO),
+				IsProjection:           false,
+				Prefix:                 pur.Prefix,
+				Number:                 pur.Number,
+				Date:                   pur.Date,
+				DueDate:                pur.DueDate,
+				ProviderIdentification: pur.Provider.Identification,
+				ProviderName:           pur.Provider.Name,
+				Total:                  pur.Total,
+				Balance:                pur.Balance,
+				Status:                 invoiceStatus(pur.Balance, pur.Total),
+				Category:               categorizePurchase(itemDescs, pur.Provider.Name),
+				Detail:                 desc + ifNonEmpty(" · ", strings.Join(itemDescs, " | ")),
 			}
-			inserted, err := h.store.ImportTransaction(t)
+			inserted, err := h.store.UpsertPurchase(record)
 			if err != nil {
 				return fmt.Errorf("saving purchase %s: %w", pur.ID, err)
 			}
@@ -375,9 +378,6 @@ func (h *SiigoHandler) syncPurchases(client *siigopkg.Client, dateStart, dateEnd
 				result.PurchasesImported++
 			} else {
 				result.Updated++
-			}
-			if err := h.syncPaymentTerms(t.ID, desc, domain.TypeEgreso, t.Category, pur.Payments, "siigo-pur-"+pur.ID, result); err != nil {
-				return fmt.Errorf("saving payment terms for purchase %s: %w", pur.ID, err)
 			}
 		}
 		if page*siigoPageSize >= resp.Pagination.TotalResults {
@@ -387,38 +387,12 @@ func (h *SiigoHandler) syncPurchases(client *siigopkg.Client, dateStart, dateEnd
 	return nil
 }
 
-// syncPaymentTerms upserts one projected transaction per PaymentTerm when the
-// invoice/purchase has more than one installment (multi-cuota plan).
-func (h *SiigoHandler) syncPaymentTerms(
-	parentID, parentDesc string,
-	txType domain.TransactionType,
-	category string,
-	terms []siigopkg.PaymentTerm,
-	extPrefix string,
-	result *domain.SiigoSyncResult,
-) error {
-	if len(terms) <= 1 {
-		return nil
+// ifNonEmpty returns prefix+s when s is non-empty, empty string otherwise.
+func ifNonEmpty(prefix, s string) string {
+	if s == "" {
+		return ""
 	}
-	for i, pt := range terms {
-		proj := &domain.Transaction{
-			Date:         pt.DueDate,
-			Description:  fmt.Sprintf("%s — cuota %d/%d", parentDesc, i+1, len(terms)),
-			Category:     category,
-			Type:         txType,
-			Amount:       pt.Value,
-			Status:       domain.StatusPending,
-			Source:       domain.SourceSIIGO,
-			ExternalID:   fmt.Sprintf("%s-pterm-%d", extPrefix, pt.ID),
-			ParentID:     parentID,
-			IsProjection: true,
-		}
-		if _, err := h.store.ImportTransaction(proj); err != nil {
-			return err
-		}
-		result.Updated++
-	}
-	return nil
+	return prefix + s
 }
 
 // siigoRef builds a human-readable document reference from prefix and number.

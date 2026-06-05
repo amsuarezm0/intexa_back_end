@@ -53,6 +53,16 @@ type Store interface {
 	GetEarliestSiigoDate() (string, error)
 	GetOldestPendingOrPartialDate() (string, error)
 
+	// ── Invoices (FV — facturas de venta) ────────────────────────────────────────
+	GetAllInvoices() ([]*domain.Invoice, error)
+	GetInvoiceByID(id string) (*domain.Invoice, bool, error)
+	UpsertInvoice(inv *domain.Invoice) (bool, error) // true = inserted
+
+	// ── Purchases (FC — facturas de compra) ──────────────────────────────────────
+	GetAllPurchases() ([]*domain.Purchase, error)
+	GetPurchaseByID(id string) (*domain.Purchase, bool, error)
+	UpsertPurchase(pur *domain.Purchase) (bool, error) // true = inserted
+
 	// ── Bank balance ──────────────────────────────────────────────────────────
 	GetBankBalance() (*domain.BankBalance, error)
 	SetBankBalance(b domain.BankBalance) error
