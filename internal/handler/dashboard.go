@@ -93,9 +93,9 @@ func (h *DashboardHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	// Chart: last 7 months
-	chartData := make([]domain.ChartDataPoint, 7)
-	for i := 0; i < 7; i++ {
+	// Chart: last 6 months
+	chartData := make([]domain.ChartDataPoint, 6)
+	for i := 0; i < 6; i++ {
 		t := sevenMonthsAgo.AddDate(0, i, 0)
 		inc, exp := lookup(t.Year(), t.Month())
 		chartData[i] = domain.ChartDataPoint{
