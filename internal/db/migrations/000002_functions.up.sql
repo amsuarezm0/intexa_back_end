@@ -28,7 +28,7 @@ LANGUAGE sql STABLE AS $$
     LEFT JOIN transactions t
            ON date_trunc('month', t.created_at) = m
           AND t.is_projection = false
-          AND t.status <> 'Cancelado'
+          AND t.status <> 'Anulado'
     GROUP BY m
     ORDER BY m;
 $$;
@@ -104,7 +104,7 @@ LANGUAGE sql STABLE AS $$
         FROM transactions t
         WHERE t.type = 'Egreso'
           AND t.is_projection = false
-          AND t.status <> 'Cancelado'
+          AND t.status <> 'Anulado'
           AND t.created_at >= date_trunc('month', now())
                             - ((p_months - 1) * INTERVAL '1 month')
         GROUP BY t.category
@@ -145,7 +145,7 @@ LANGUAGE sql STABLE AS $$
         WHERE  EXTRACT(YEAR  FROM t.created_at) = p.yr
           AND  EXTRACT(MONTH FROM t.created_at) = p.mo
           AND  t.is_projection = false
-          AND  t.status <> 'Cancelado'
+          AND  t.status <> 'Anulado'
         GROUP BY t.category
     )
     SELECT
@@ -189,7 +189,7 @@ BEGIN
             SUM(CASE WHEN t.type = 'Ingreso' THEN t.amount ELSE -t.amount END) AS net
         FROM transactions t
         WHERE (t.status = 'Pendiente' OR t.is_projection = true)
-          AND t.status <> 'Cancelado'
+          AND t.status <> 'Anulado'
           AND t.created_at::DATE BETWEEN CURRENT_DATE
                                      AND CURRENT_DATE + p_days
         GROUP BY day_off

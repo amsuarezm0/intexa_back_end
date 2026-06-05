@@ -456,6 +456,20 @@ func (s *Store) GetEarliestSiigoDate() (string, error) {
 	return d, nil
 }
 
+func (s *Store) GetOldestPendingOrPartialDate() (string, error) {
+	var d string
+	err := s.pool.QueryRow(bg(), `
+		SELECT TO_CHAR(MIN(date), 'YYYY-MM-DD')
+		FROM transactions
+		WHERE status IN ('Pendiente', 'Parcial')
+		  AND is_projection = false`,
+	).Scan(&d)
+	if err != nil {
+		return "", err
+	}
+	return d, nil
+}
+
 // ── Bank balance ──────────────────────────────────────────────────────────────
 
 func (s *Store) GetBankBalance() (*domain.BankBalance, error) {

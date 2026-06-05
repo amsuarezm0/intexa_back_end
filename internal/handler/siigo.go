@@ -16,7 +16,7 @@ import (
 
 const (
 	siigoPageSize     = 100
-	incrementalDays   = 3   // overlap window for incremental (days before lastSync)
+	incrementalDays   = 90  // rolling window for incremental (days back from today)
 	schedulerHour     = 6   // daily sync fires at 06:00 local time
 	reconcileDay      = 1   // reconcile fires on the 1st of each month
 	bootstrapFallback = 730 // days back when no records exist (2 years)
@@ -38,6 +38,7 @@ func (h *SiigoHandler) AutoConnect(userName, accessKey, partnerID string) error 
 	if err := client.Connect(); err != nil {
 		return err
 	}
+	client.StartAutoRefresh()
 	h.mu.Lock()
 	h.client = client
 	h.mu.Unlock()
@@ -122,6 +123,7 @@ func (h *SiigoHandler) Connect(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, fmt.Sprintf("siigo authentication failed: %v", err), http.StatusBadGateway)
 		return
 	}
+	client.StartAutoRefresh()
 
 	h.mu.Lock()
 	h.client = client
@@ -233,33 +235,23 @@ func (h *SiigoHandler) resolveDates(mode domain.SiigoSyncMode, requestedStart st
 		return requestedStart, today, nil
 
 	case domain.SyncModeReconcile:
-		// Always re-scan the full window: from the earliest transaction we have
-		// in the DB, or bootstrapFallback days back if the tables are empty.
-		earliest, err := h.store.GetEarliestSiigoDate()
+		// Start from the oldest Pendiente/Parcial transaction so any status
+		// changes Siigo has recorded since that date are picked up.
+		oldest, err := h.store.GetOldestPendingOrPartialDate()
 		if err != nil {
 			return "", "", err
 		}
-		if earliest == "" {
-			earliest = time.Now().AddDate(0, 0, -bootstrapFallback).Format("2006-01-02")
+		if oldest == "" {
+			// No pending transactions — fall back to last 90 days.
+			oldest = time.Now().AddDate(0, 0, -incrementalDays).Format("2006-01-02")
 		}
-		return earliest, today, nil
+		slog.Info("siigo_reconcile_window", "date_start", oldest, "date_end", today)
+		return oldest, today, nil
 
 	default: // incremental
-		// Use lastSync as the anchor so we only fetch genuinely new data.
-		// Fall back to bootstrapFallback days when there has never been a sync
-		// (e.g. fresh install or after a table clear).
-		cfg, err := h.store.GetSiigoConfig()
-		if err != nil {
-			return "", "", err
-		}
-		var start string
-		if cfg != nil && !cfg.LastSync.IsZero() {
-			// Go back incrementalDays before lastSync as a safety overlap.
-			start = cfg.LastSync.AddDate(0, 0, -incrementalDays).Format("2006-01-02")
-		} else {
-			start = time.Now().AddDate(0, 0, -bootstrapFallback).Format("2006-01-02")
-		}
-		return start, today, nil
+		// Always scan the last 90 days from today so status changes and new
+		// records within that window are never missed.
+		return time.Now().AddDate(0, 0, -incrementalDays).Format("2006-01-02"), today, nil
 	}
 }
 
@@ -300,6 +292,9 @@ func (h *SiigoHandler) syncInvoices(client *siigopkg.Client, dateStart, dateEnd 
 			return fmt.Errorf("fetching invoices page %d: %w", page, err)
 		}
 		for _, inv := range resp.Results {
+			if inv.Date < dateStart || inv.Date > dateEnd {
+				continue
+			}
 			desc := inv.Name
 			if desc == "" {
 				desc = siigoRef(inv.Prefix, inv.Number)
@@ -348,6 +343,9 @@ func (h *SiigoHandler) syncPurchases(client *siigopkg.Client, dateStart, dateEnd
 			return fmt.Errorf("fetching purchases page %d: %w", page, err)
 		}
 		for _, pur := range resp.Results {
+			if pur.Date < dateStart || pur.Date > dateEnd {
+				continue
+			}
 			desc := pur.Name
 			if desc == "" {
 				desc = siigoRef(pur.Prefix, pur.Number)

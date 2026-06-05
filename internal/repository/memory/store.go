@@ -500,6 +500,24 @@ func (s *Store) GetEarliestSiigoDate() (string, error) {
 	return earliest, nil
 }
 
+func (s *Store) GetOldestPendingOrPartialDate() (string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	oldest := ""
+	for _, t := range s.transactions {
+		if t.IsProjection {
+			continue
+		}
+		if t.Status != domain.StatusPending && t.Status != domain.StatusPartial {
+			continue
+		}
+		if oldest == "" || t.Date < oldest {
+			oldest = t.Date
+		}
+	}
+	return oldest, nil
+}
+
 // ── Bank balance ──────────────────────────────────────────────────────────────
 
 func (s *Store) GetBankBalance() (*domain.BankBalance, error) {

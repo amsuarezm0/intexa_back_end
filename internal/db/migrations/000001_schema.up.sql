@@ -176,7 +176,7 @@ CREATE TABLE IF NOT EXISTS transactions (
     amount        NUMERIC(18,2) NOT NULL,
     balance       NUMERIC(18,2) NOT NULL DEFAULT 0,
     status        TEXT          NOT NULL DEFAULT 'Pendiente'
-                                CHECK (status IN ('Completado', 'Pendiente', 'Cancelado', 'Parcial')),
+                                CHECK (status IN ('Completado', 'Pendiente', 'Anulado', 'Parcial')),
     reference     TEXT,
     source        TEXT          NOT NULL DEFAULT 'Manual'
                                 CHECK (source IN ('Siigo', 'Manual')),

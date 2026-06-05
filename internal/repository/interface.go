@@ -51,6 +51,7 @@ type Store interface {
 	SetSiigoConfig(cfg domain.SiigoConfig) error
 	UpdateSiigoLastSync(t time.Time) error
 	GetEarliestSiigoDate() (string, error)
+	GetOldestPendingOrPartialDate() (string, error)
 
 	// ── Bank balance ──────────────────────────────────────────────────────────
 	GetBankBalance() (*domain.BankBalance, error)

@@ -14,7 +14,7 @@ const (
 	StatusCompleted TransactionStatus = "Completado"
 	StatusPartial   TransactionStatus = "Parcial"
 	StatusPending   TransactionStatus = "Pendiente"
-	StatusCancelled TransactionStatus = "Cancelado"
+	StatusCancelled TransactionStatus = "Anulado"
 
 	SourceSIIGO  TransactionSource = "Siigo"
 	SourceManual TransactionSource = "Manual"

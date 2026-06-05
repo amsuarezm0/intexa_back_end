@@ -47,6 +47,33 @@ func (c *Client) Connect() error {
 	return c.refreshToken()
 }
 
+// StartAutoRefresh spawns a goroutine that proactively renews the token
+// 10 minutes before it expires, so API calls are never blocked by re-auth.
+func (c *Client) StartAutoRefresh() {
+	go func() {
+		for {
+			c.mu.Lock()
+			exp := c.tokenExp
+			c.mu.Unlock()
+
+			// Sleep until 10 minutes before expiry; if already past that, retry in 1h.
+			fireAt := exp.Add(-10 * time.Minute)
+			if !fireAt.After(time.Now()) {
+				fireAt = time.Now().Add(time.Hour)
+			}
+			time.Sleep(time.Until(fireAt))
+
+			c.mu.Lock()
+			if err := c.refreshToken(); err != nil {
+				slog.Error("siigo_token_refresh_failed", "error", err)
+			} else {
+				slog.Info("siigo_token_refreshed", "exp", c.tokenExp.Format(time.RFC3339))
+			}
+			c.mu.Unlock()
+		}
+	}()
+}
+
 func (c *Client) refreshToken() error {
 	body, _ := json.Marshal(SignInRequest{
 		UserName:  c.userName,
