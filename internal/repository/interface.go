@@ -78,6 +78,9 @@ type Store interface {
 	GetBankBalance() (*domain.BankBalance, error)
 	SetBankBalance(b domain.BankBalance) error
 
+	// ── Cashflow period ───────────────────────────────────────────────────────
+	GetPeriodData(from, to time.Time) (*domain.PeriodData, error)
+
 	// ── Search ────────────────────────────────────────────────────────────────
 	Search(reference string) ([]domain.SearchDocument, error)
 }

@@ -189,8 +189,45 @@ func (h *CashFlowHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 
 	jsonOK(w, domain.CashFlowSummary{
 		Days:             days,
+		Balance:          balance,
 		ProjectedBalance: projected,
 		ProjectedChange:  projectedChange,
 		Alerts:           alerts,
 	})
+}
+
+func (h *CashFlowHandler) GetPeriodData(w http.ResponseWriter, r *http.Request) {
+	period := r.URL.Query().Get("period")
+	dateStr := r.URL.Query().Get("date")
+
+	ref, err := time.Parse("2006-01-02", dateStr)
+	if err != nil {
+		ref = time.Now()
+	}
+	ref = time.Date(ref.Year(), ref.Month(), ref.Day(), 0, 0, 0, 0, ref.Location())
+
+	var from, to time.Time
+	switch period {
+	case "day":
+		from = ref
+		to = ref
+	case "week":
+		dow := int(ref.Weekday())
+		if dow == 0 {
+			dow = 7
+		}
+		from = ref.AddDate(0, 0, -(dow - 1))
+		to = from.AddDate(0, 0, 6)
+	default: // month
+		from = time.Date(ref.Year(), ref.Month(), 1, 0, 0, 0, 0, ref.Location())
+		to = time.Date(ref.Year(), ref.Month()+1, 0, 0, 0, 0, 0, ref.Location())
+	}
+
+	data, err := h.store.GetPeriodData(from, to)
+	if err != nil {
+		slog.Error("cashflow: GetPeriodData", "err", err)
+		jsonError(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	jsonOK(w, data)
 }

@@ -120,6 +120,7 @@ func main() {
 			r.Get("/transactions/summary", transactions.Summary)
 			r.Get("/transactions/{id}", transactions.Get)
 			r.Get("/cashflow", cashflow.GetSummary)
+			r.Get("/cashflow/period", cashflow.GetPeriodData)
 			r.Get("/projections", projections.GetSummary)
 			r.Post("/projections/simulate", projections.Simulate)
 			r.Get("/reports", reports.GetSummary)

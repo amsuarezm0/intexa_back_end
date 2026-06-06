@@ -174,9 +174,16 @@ type CashFlowDay struct {
 
 type CashFlowSummary struct {
 	Days             []CashFlowDay `json:"days"`
+	Balance          float64       `json:"balance"`
 	ProjectedBalance float64       `json:"projectedBalance"`
 	ProjectedChange  float64       `json:"projectedChange"`
 	Alerts           []Alert       `json:"alerts"`
+}
+
+type PeriodData struct {
+	Transactions []*Transaction `json:"transactions"`
+	Invoices     []*Invoice     `json:"invoices"`
+	Purchases    []*Purchase    `json:"purchases"`
 }
 
 type ProjectionPoint struct {

@@ -310,10 +310,6 @@ func (h *SiigoHandler) syncInvoices(client *siigopkg.Client, dateStart, dateEnd 
 			if inv.Date < dateStart || inv.Date > dateEnd {
 				continue
 			}
-			desc := inv.Name
-			if desc == "" {
-				desc = siigoRef(inv.Prefix, inv.Number)
-			}
 			itemDescs := make([]string, 0, len(inv.Items))
 			for _, it := range inv.Items {
 				itemDescs = append(itemDescs, strings.TrimSpace(it.Description))
@@ -322,6 +318,7 @@ func (h *SiigoHandler) syncInvoices(client *siigopkg.Client, dateStart, dateEnd 
 				ExternalID:             fmt.Sprintf("siigo-inv-%s", inv.ID),
 				Source:                 string(domain.SourceSIIGO),
 				IsProjection:           false,
+				Reference:              inv.Name,
 				Prefix:                 inv.Prefix,
 				Number:                 inv.Number,
 				Date:                   inv.Date,
@@ -332,7 +329,7 @@ func (h *SiigoHandler) syncInvoices(client *siigopkg.Client, dateStart, dateEnd 
 				Balance:                inv.Balance,
 				Status:                 invoiceStatus(inv.Balance, inv.Total),
 				Category:               categorizeInvoice(itemDescs, inv.Customer.Name),
-				Detail:                 desc + ifNonEmpty(" · ", strings.Join(itemDescs, " | ")),
+				Detail:                 inv.Name + ifNonEmpty(" · ", strings.Join(itemDescs, " | ")),
 			}
 			inserted, err := h.store.UpsertInvoice(record)
 			if err != nil {
@@ -365,10 +362,6 @@ func (h *SiigoHandler) syncPurchases(client *siigopkg.Client, dateStart, dateEnd
 			if pur.Date < dateStart || pur.Date > dateEnd {
 				continue
 			}
-			desc := pur.Name
-			if desc == "" {
-				desc = siigoRef(pur.Prefix, pur.Number)
-			}
 			itemDescs := make([]string, 0, len(pur.Items))
 			for _, it := range pur.Items {
 				itemDescs = append(itemDescs, strings.TrimSpace(it.Description))
@@ -377,6 +370,7 @@ func (h *SiigoHandler) syncPurchases(client *siigopkg.Client, dateStart, dateEnd
 				ExternalID:             fmt.Sprintf("siigo-pur-%s", pur.ID),
 				Source:                 string(domain.SourceSIIGO),
 				IsProjection:           false,
+				Reference:              pur.Name,
 				Prefix:                 pur.Prefix,
 				Number:                 pur.Number,
 				Date:                   pur.Date,
@@ -387,7 +381,7 @@ func (h *SiigoHandler) syncPurchases(client *siigopkg.Client, dateStart, dateEnd
 				Balance:                pur.Balance,
 				Status:                 invoiceStatus(pur.Balance, pur.Total),
 				Category:               categorizePurchase(itemDescs, pur.Provider.Name),
-				Detail:                 desc + ifNonEmpty(" · ", strings.Join(itemDescs, " | ")),
+				Detail:                 pur.Name + ifNonEmpty(" · ", strings.Join(itemDescs, " | ")),
 			}
 			inserted, err := h.store.UpsertPurchase(record)
 			if err != nil {
@@ -420,10 +414,6 @@ func (h *SiigoHandler) syncVouchers(client *siigopkg.Client, dateStart, dateEnd 
 			if v.Date < dateStart || v.Date > dateEnd {
 				continue
 			}
-			desc := v.Name
-			if desc == "" {
-				desc = siigoRef(v.Prefix, v.Number)
-			}
 			itemDescs := make([]string, 0, len(v.Items))
 			for _, it := range v.Items {
 				if s := strings.TrimSpace(it.Description); s != "" {
@@ -431,16 +421,16 @@ func (h *SiigoHandler) syncVouchers(client *siigopkg.Client, dateStart, dateEnd 
 				}
 			}
 			t := &domain.Transaction{
-				Date:        v.Date,
-				Description: desc,
-				Reference:   siigoRef(v.Prefix, v.Number),
-				Category:    categorizeInvoice(itemDescs, v.Customer.Name),
-				Type:        domain.TypeIngreso,
-				Amount:      voucherTotal(v.Total, v.Items, "Debit"),
-				Status:      domain.StatusCompleted,
-				Detail:      desc + ifNonEmpty(" · ", strings.Join(itemDescs, " | ")),
-				Source:      domain.SourceSIIGO,
-				ExternalID:  fmt.Sprintf("siigo-rc-%s", v.ID),
+				Date:         v.Date,
+				Description:  v.Name,
+				Reference:    v.Name,
+				Category:     categorizeInvoice(itemDescs, v.Customer.Name),
+				Type:         domain.TypeIngreso,
+				Amount:       voucherTotal(v.Total, v.Items, "Debit"),
+				Status:       domain.StatusCompleted,
+				Detail:       v.Name + ifNonEmpty(" · ", strings.Join(itemDescs, " | ")),
+				Source:       domain.SourceSIIGO,
+				ExternalID:   fmt.Sprintf("siigo-rc-%s", v.ID),
 				IsProjection: false,
 			}
 			inserted, err := h.store.ImportTransaction(t)
@@ -474,10 +464,6 @@ func (h *SiigoHandler) syncPaymentReceipts(client *siigopkg.Client, dateStart, d
 			if pr.Date < dateStart || pr.Date > dateEnd {
 				continue
 			}
-			desc := pr.Name
-			if desc == "" {
-				desc = siigoRef(pr.Prefix, pr.Number)
-			}
 			itemDescs := make([]string, 0, len(pr.Items))
 			for _, it := range pr.Items {
 				if s := strings.TrimSpace(it.Description); s != "" {
@@ -485,16 +471,16 @@ func (h *SiigoHandler) syncPaymentReceipts(client *siigopkg.Client, dateStart, d
 				}
 			}
 			t := &domain.Transaction{
-				Date:        pr.Date,
-				Description: desc,
-				Reference:   siigoRef(pr.Prefix, pr.Number),
-				Category:    categorizePurchase(itemDescs, pr.Provider.Name),
-				Type:        domain.TypeEgreso,
-				Amount:      voucherTotal(pr.Total, pr.Items, "Credit"),
-				Status:      domain.StatusCompleted,
-				Detail:      desc + ifNonEmpty(" · ", strings.Join(itemDescs, " | ")),
-				Source:      domain.SourceSIIGO,
-				ExternalID:  fmt.Sprintf("siigo-rp-%s", pr.ID),
+				Date:         pr.Date,
+				Description:  pr.Name,
+				Reference:    pr.Name,
+				Category:     categorizePurchase(itemDescs, pr.Provider.Name),
+				Type:         domain.TypeEgreso,
+				Amount:       voucherTotal(pr.Total, pr.Items, "Credit"),
+				Status:       domain.StatusCompleted,
+				Detail:       pr.Name + ifNonEmpty(" · ", strings.Join(itemDescs, " | ")),
+				Source:       domain.SourceSIIGO,
+				ExternalID:   fmt.Sprintf("siigo-rp-%s", pr.ID),
 				IsProjection: false,
 			}
 			inserted, err := h.store.ImportTransaction(t)
@@ -553,16 +539,6 @@ func ifNonEmpty(prefix, s string) string {
 		return ""
 	}
 	return prefix + s
-}
-
-// siigoRef builds a human-readable document reference from prefix and number.
-// When prefix is empty (Siigo omits it on some document types) it falls back
-// to just the number so we never produce a leading "-" in the UI.
-func siigoRef(prefix string, number int) string {
-	if prefix == "" {
-		return fmt.Sprintf("%d", number)
-	}
-	return fmt.Sprintf("%s-%d", prefix, number)
 }
 
 func invoiceStatus(balance, total float64) domain.TransactionStatus {

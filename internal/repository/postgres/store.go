@@ -977,6 +977,56 @@ func scanPurchases(rows pgx.Rows) ([]*domain.Purchase, error) {
 	return list, rows.Err()
 }
 
+// ── Cashflow period ───────────────────────────────────────────────────────
+
+func (s *Store) GetPeriodData(from, to time.Time) (*domain.PeriodData, error) {
+	txRows, err := s.pool.Query(bg(), `
+		SELECT id, date::TEXT, description, category, type, amount, status,
+		       COALESCE(reference,''), COALESCE(detail,''), source, COALESCE(external_id,''),
+		       is_projection, created_at, updated_at
+		FROM   transactions
+		WHERE  date >= $1 AND date <= $2
+		ORDER  BY date DESC`, from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer txRows.Close()
+	txs, err := scanTransactions(txRows)
+	if err != nil {
+		return nil, err
+	}
+
+	invRows, err := s.pool.Query(bg(), `SELECT`+invoiceCols+`
+		FROM invoices
+		WHERE status IN ('Pendiente','Parcial')
+		  AND COALESCE(due_date, date) >= $1 AND COALESCE(due_date, date) <= $2
+		ORDER BY date DESC`, from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer invRows.Close()
+	invs, err := scanInvoices(invRows)
+	if err != nil {
+		return nil, err
+	}
+
+	purRows, err := s.pool.Query(bg(), `SELECT`+purchaseCols+`
+		FROM purchases
+		WHERE status IN ('Pendiente','Parcial')
+		  AND COALESCE(due_date, date) >= $1 AND COALESCE(due_date, date) <= $2
+		ORDER BY date DESC`, from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer purRows.Close()
+	purs, err := scanPurchases(purRows)
+	if err != nil {
+		return nil, err
+	}
+
+	return &domain.PeriodData{Transactions: txs, Invoices: invs, Purchases: purs}, nil
+}
+
 // ── Search ────────────────────────────────────────────────────────────────────
 
 var prefixToTable = map[string]string{

@@ -876,6 +876,14 @@ func (s *Store) UpsertPurchase(pur *domain.Purchase) (bool, error) {
 	return true, nil
 }
 
+func (s *Store) GetPeriodData(_, _ time.Time) (*domain.PeriodData, error) {
+	return &domain.PeriodData{
+		Transactions: []*domain.Transaction{},
+		Invoices:     []*domain.Invoice{},
+		Purchases:    []*domain.Purchase{},
+	}, nil
+}
+
 func (s *Store) Search(_ string) ([]domain.SearchDocument, error) {
 	return []domain.SearchDocument{}, nil
 }
