@@ -114,15 +114,9 @@ func (s *Store) DeleteTransaction(id string) (bool, error) {
 func (s *Store) GetCurrentBalance() (float64, error) {
 	var bal float64
 	err := s.pool.QueryRow(bg(), `
-		SELECT COALESCE(SUM(net), 0) FROM (
-			SELECT CASE WHEN type='Ingreso' THEN amount ELSE -amount END AS net
-			FROM   transactions
-			WHERE  status='Completado' AND is_projection=false
-			UNION ALL
-			SELECT amount AS net FROM invoices  WHERE status='Completado'
-			UNION ALL
-			SELECT -amount AS net FROM purchases WHERE status='Completado'
-		) sub`).Scan(&bal)
+		SELECT COALESCE(SUM(CASE WHEN type='Ingreso' THEN amount ELSE -amount END), 0)
+		FROM   transactions
+		WHERE  status='Completado' AND is_projection=false`).Scan(&bal)
 	return bal, err
 }
 
