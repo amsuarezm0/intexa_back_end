@@ -3,7 +3,6 @@ package siigo
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -13,8 +12,6 @@ import (
 )
 
 // APIError is returned when Siigo responds with a non-200 status code.
-// Callers can inspect StatusCode to distinguish 4xx (logic errors) from
-// 5xx (Siigo-side bugs) and decide whether to abort or skip.
 type APIError struct {
 	StatusCode int
 	Body       string
@@ -23,12 +20,6 @@ type APIError struct {
 
 func (e *APIError) Error() string {
 	return fmt.Sprintf("siigo GET %s error %d: %s", e.Path, e.StatusCode, e.Body)
-}
-
-// IsServerError reports whether err is a Siigo 5xx APIError.
-func IsServerError(err error) bool {
-	var ae *APIError
-	return errors.As(err, &ae) && ae.StatusCode >= 500
 }
 
 const (
@@ -41,7 +32,7 @@ const (
 )
 
 type Client struct {
-	mu         sync.Mutex
+	mu         sync.RWMutex
 	userName   string
 	accessKey  string
 	partnerID  string
@@ -59,8 +50,6 @@ func NewClient(userName, accessKey, partnerID string) *Client {
 	}
 }
 
-// Connect authenticates against Siigo and stores the token. Returns an error
-// if the credentials are rejected.
 func (c *Client) Connect() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -72,11 +61,10 @@ func (c *Client) Connect() error {
 func (c *Client) StartAutoRefresh() {
 	go func() {
 		for {
-			c.mu.Lock()
+			c.mu.RLock()
 			exp := c.tokenExp
-			c.mu.Unlock()
+			c.mu.RUnlock()
 
-			// Sleep until 10 minutes before expiry; if already past that, retry in 1h.
 			fireAt := exp.Add(-10 * time.Minute)
 			if !fireAt.After(time.Now()) {
 				fireAt = time.Now().Add(time.Hour)
@@ -132,18 +120,30 @@ func (c *Client) refreshToken() error {
 	return nil
 }
 
-func (c *Client) ensureToken() error {
-	if c.token == "" || time.Now().After(c.tokenExp.Add(-5*time.Minute)) {
-		return c.refreshToken()
+// getToken returns a valid bearer token, refreshing under a write lock only when needed.
+func (c *Client) getToken() (string, error) {
+	c.mu.RLock()
+	if c.token != "" && time.Now().Before(c.tokenExp.Add(-5*time.Minute)) {
+		token := c.token
+		c.mu.RUnlock()
+		return token, nil
 	}
-	return nil
+	c.mu.RUnlock()
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.token != "" && time.Now().Before(c.tokenExp.Add(-5*time.Minute)) {
+		return c.token, nil
+	}
+	if err := c.refreshToken(); err != nil {
+		return "", err
+	}
+	return c.token, nil
 }
 
 func (c *Client) get(path string, out any) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if err := c.ensureToken(); err != nil {
+	token, err := c.getToken()
+	if err != nil {
 		return err
 	}
 
@@ -151,7 +151,7 @@ func (c *Client) get(path string, out any) error {
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Partner-Id", c.partnerID)
 
 	start := time.Now()
@@ -177,7 +177,6 @@ func (c *Client) get(path string, out any) error {
 	return json.NewDecoder(resp.Body).Decode(out)
 }
 
-// GetInvoices returns sales invoices for the given date range (YYYY-MM-DD).
 func (c *Client) GetInvoices(dateStart, dateEnd string, page, pageSize int) (*InvoiceListResponse, error) {
 	path := fmt.Sprintf("%s?date_start=%s&date_end=%s&page=%d&page_size=%d",
 		InvoicePath, dateStart, dateEnd, page, pageSize)
@@ -185,7 +184,6 @@ func (c *Client) GetInvoices(dateStart, dateEnd string, page, pageSize int) (*In
 	return &result, c.get(path, &result)
 }
 
-// GetPurchases returns purchase invoices for the given date range.
 func (c *Client) GetPurchases(dateStart, dateEnd string, page, pageSize int) (*PurchaseListResponse, error) {
 	path := fmt.Sprintf("%s?date_start=%s&date_end=%s&page=%d&page_size=%d",
 		PurchasePath, dateStart, dateEnd, page, pageSize)
@@ -193,7 +191,6 @@ func (c *Client) GetPurchases(dateStart, dateEnd string, page, pageSize int) (*P
 	return &result, c.get(path, &result)
 }
 
-// GetVouchers returns cash receipt vouchers (RC) for the given date range.
 func (c *Client) GetVouchers(dateStart, dateEnd string, page, pageSize int) (*VoucherListResponse, error) {
 	path := fmt.Sprintf("%s?date_start=%s&date_end=%s&page=%d&page_size=%d",
 		VoucherPath, dateStart, dateEnd, page, pageSize)
@@ -201,7 +198,6 @@ func (c *Client) GetVouchers(dateStart, dateEnd string, page, pageSize int) (*Vo
 	return &result, c.get(path, &result)
 }
 
-// GetPaymentReceipts returns payment receipt vouchers (RP) for the given date range.
 func (c *Client) GetPaymentReceipts(dateStart, dateEnd string, page, pageSize int) (*PaymentReceiptListResponse, error) {
 	path := fmt.Sprintf("%s?date_start=%s&date_end=%s&page=%d&page_size=%d",
 		PaymentReceiptPath, dateStart, dateEnd, page, pageSize)
@@ -209,16 +205,14 @@ func (c *Client) GetPaymentReceipts(dateStart, dateEnd string, page, pageSize in
 	return &result, c.get(path, &result)
 }
 
-// IsConnected reports whether the client holds a valid, non-expired token.
 func (c *Client) IsConnected() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c.token != "" && time.Now().Before(c.tokenExp)
 }
 
-// TokenExpiry returns when the current token expires.
 func (c *Client) TokenExpiry() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c.tokenExp
 }

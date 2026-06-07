@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"log/slog"
@@ -15,11 +16,13 @@ import (
 )
 
 const (
-	siigoPageSize     = 100
-	incrementalDays   = 90  // rolling window for incremental (days back from today)
-	schedulerHour     = 6   // daily sync fires at 06:00 local time
-	reconcileDay      = 1   // reconcile fires on the 1st of each month
-	bootstrapFallback = 730 // days back when no records exist (2 years)
+	siigoPageSize      = 100
+	siigoRetryAttempts = 3
+	siigoMaxConcurrent = 8
+	incrementalDays    = 90  // rolling window for incremental (days back from today)
+	schedulerHour      = 6   // daily sync fires at 06:00 local time
+	reconcileDay       = 1   // reconcile fires on the 1st of each month
+	bootstrapFallback  = 730 // days back when no records exist (2 years)
 )
 
 type SiigoHandler struct {
@@ -87,14 +90,14 @@ func (h *SiigoHandler) runScheduler() {
 			continue
 		}
 		slog.Info("siigo_sync_done",
-			"mode",                     mode,
-			"invoices_imported",        result.InvoicesImported,
-			"purchases_imported",       result.PurchasesImported,
-			"vouchers_imported",        result.VouchersImported,
+			"mode",                      mode,
+			"invoices_imported",         result.InvoicesImported,
+			"purchases_imported",        result.PurchasesImported,
+			"vouchers_imported",         result.VouchersImported,
 			"payment_receipts_imported", result.PaymentReceiptsImported,
-			"updated",                  result.Updated,
-			"date_start",               dateStart,
-			"date_end",                 dateEnd,
+			"updated",                   result.Updated,
+			"date_start",                dateStart,
+			"date_end",                  dateEnd,
 		)
 	}
 }
@@ -181,7 +184,7 @@ func (h *SiigoHandler) Sync(w http.ResponseWriter, r *http.Request) {
 
 	client, err := h.ensureClient()
 	if err != nil {
-		jsonError(w, err.Error(), http.StatusConflict)
+		jsonError(w, err.Error(), http.StatusServiceUnavailable)
 		return
 	}
 
@@ -189,9 +192,6 @@ func (h *SiigoHandler) Sync(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		jsonError(w, fmt.Sprintf("could not resolve sync window: %v", err), http.StatusInternalServerError)
 		return
-	}
-	if req.DateEnd != "" {
-		dateEnd = req.DateEnd
 	}
 
 	actor, initial := actorFrom(r)
@@ -237,41 +237,65 @@ func (h *SiigoHandler) resolveDates(mode domain.SiigoSyncMode, requestedStart st
 		return requestedStart, today, nil
 
 	case domain.SyncModeReconcile:
-		// Start from the oldest Pendiente/Parcial transaction so any status
-		// changes Siigo has recorded since that date are picked up.
 		oldest, err := h.store.GetOldestPendingOrPartialDate()
 		if err != nil {
 			return "", "", err
 		}
 		if oldest == "" {
-			// No pending transactions — fall back to last 90 days.
 			oldest = time.Now().AddDate(0, 0, -incrementalDays).Format("2006-01-02")
 		}
 		slog.Info("siigo_reconcile_window", "date_start", oldest, "date_end", today)
 		return oldest, today, nil
 
 	default: // incremental
-		// Always scan the last 90 days from today so status changes and new
-		// records within that window are never missed.
 		return time.Now().AddDate(0, 0, -incrementalDays).Format("2006-01-02"), today, nil
 	}
 }
 
-// runSync fetches all pages for the given window and upserts into the store.
+// withRetry calls fn up to attempts times, sleeping 1s, 2s, … between failures.
+func withRetry(attempts int, fn func() error) error {
+	var err error
+	for i := 0; i < attempts; i++ {
+		if err = fn(); err == nil {
+			return nil
+		}
+		if i < attempts-1 {
+			time.Sleep(time.Duration(1<<uint(i)) * time.Second)
+		}
+	}
+	return err
+}
+
+// runSync fetches all pages for the given window concurrently and upserts into the store.
+// All four resource types run in parallel; within each type all pages run in parallel.
+// A shared semaphore caps total concurrent Siigo requests to siigoMaxConcurrent.
+// Every failed page is retried up to siigoRetryAttempts times before being counted as an error.
+// Errors from all resources are collected and joined so no partial failure is silently dropped.
 func (h *SiigoHandler) runSync(client *siigopkg.Client, mode domain.SiigoSyncMode, dateStart, dateEnd, actor, initial string) (*domain.SiigoSyncResult, error) {
 	result := &domain.SiigoSyncResult{Mode: mode, DateStart: dateStart, DateEnd: dateEnd}
+	var resultMu sync.Mutex
+	sem := make(chan struct{}, siigoMaxConcurrent)
 
-	if err := h.syncInvoices(client, dateStart, dateEnd, result); err != nil {
-		return nil, err
+	syncs := []func() error{
+		func() error { return h.syncInvoices(client, dateStart, dateEnd, result, &resultMu, sem) },
+		func() error { return h.syncPurchases(client, dateStart, dateEnd, result, &resultMu, sem) },
+		func() error { return h.syncVouchers(client, dateStart, dateEnd, result, &resultMu, sem) },
+		func() error { return h.syncPaymentReceipts(client, dateStart, dateEnd, result, &resultMu, sem) },
 	}
-	if err := h.syncPurchases(client, dateStart, dateEnd, result); err != nil {
-		return nil, err
+
+	errs := make([]error, len(syncs))
+	var wg sync.WaitGroup
+	for i, fn := range syncs {
+		wg.Add(1)
+		go func(i int, fn func() error) {
+			defer wg.Done()
+			errs[i] = fn()
+		}(i, fn)
 	}
-	if err := h.syncVouchers(client, dateStart, dateEnd, result); err != nil {
-		return nil, err
-	}
-	if err := h.syncPaymentReceipts(client, dateStart, dateEnd, result); err != nil {
-		return nil, err
+	wg.Wait()
+
+	if err := errors.Join(errs...); err != nil {
+		return result, err
 	}
 
 	h.store.UpdateSiigoLastSync(time.Now())    //nolint
@@ -284,223 +308,356 @@ func (h *SiigoHandler) runSync(client *siigopkg.Client, mode domain.SiigoSyncMod
 	})
 	slog.Info("siigo_sync_complete",
 		"mode",                      mode,
-		"actor",                      actor,
-		"invoices_imported",          result.InvoicesImported,
-		"purchases_imported",         result.PurchasesImported,
-		"vouchers_imported",          result.VouchersImported,
-		"payment_receipts_imported",  result.PaymentReceiptsImported,
-		"updated",                    result.Updated,
-		"date_start",                 dateStart,
-		"date_end",                   dateEnd,
+		"actor",                     actor,
+		"invoices_imported",         result.InvoicesImported,
+		"purchases_imported",        result.PurchasesImported,
+		"vouchers_imported",         result.VouchersImported,
+		"payment_receipts_imported", result.PaymentReceiptsImported,
+		"updated",                   result.Updated,
+		"date_start",                dateStart,
+		"date_end",                  dateEnd,
 	)
 	return result, nil
 }
 
-func (h *SiigoHandler) syncInvoices(client *siigopkg.Client, dateStart, dateEnd string, result *domain.SiigoSyncResult) error {
-	for page := 1; ; page++ {
-		resp, err := client.GetInvoices(dateStart, dateEnd, page, siigoPageSize)
+func (h *SiigoHandler) syncInvoices(client *siigopkg.Client, dateStart, dateEnd string, result *domain.SiigoSyncResult, mu *sync.Mutex, sem chan struct{}) error {
+	var page1 *siigopkg.InvoiceListResponse
+	if err := withRetry(siigoRetryAttempts, func() error {
+		sem <- struct{}{}
+		defer func() { <-sem }()
+		var e error
+		page1, e = client.GetInvoices(dateStart, dateEnd, 1, siigoPageSize)
+		return e
+	}); err != nil {
+		return fmt.Errorf("invoices page 1: %w", err)
+	}
+	if err := h.saveInvoices(page1.Results, dateStart, dateEnd, result, mu); err != nil {
+		return err
+	}
+
+	totalPages := (page1.Pagination.TotalResults + siigoPageSize - 1) / siigoPageSize
+	if totalPages <= 1 {
+		return nil
+	}
+
+	pageErrs := make([]error, totalPages-1)
+	var wg sync.WaitGroup
+	for page := 2; page <= totalPages; page++ {
+		wg.Add(1)
+		go func(page int) {
+			defer wg.Done()
+			var resp *siigopkg.InvoiceListResponse
+			if err := withRetry(siigoRetryAttempts, func() error {
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				var e error
+				resp, e = client.GetInvoices(dateStart, dateEnd, page, siigoPageSize)
+				return e
+			}); err != nil {
+				pageErrs[page-2] = fmt.Errorf("invoices page %d: %w", page, err)
+				return
+			}
+			pageErrs[page-2] = h.saveInvoices(resp.Results, dateStart, dateEnd, result, mu)
+		}(page)
+	}
+	wg.Wait()
+	return errors.Join(pageErrs...)
+}
+
+func (h *SiigoHandler) saveInvoices(invoices []siigopkg.Invoice, dateStart, dateEnd string, result *domain.SiigoSyncResult, mu *sync.Mutex) error {
+	for _, inv := range invoices {
+		if inv.Date < dateStart || inv.Date > dateEnd {
+			continue
+		}
+		itemDescs := make([]string, 0, len(inv.Items))
+		for _, it := range inv.Items {
+			itemDescs = append(itemDescs, strings.TrimSpace(it.Description))
+		}
+		record := &domain.Invoice{
+			ExternalID:             fmt.Sprintf("siigo-inv-%s", inv.ID),
+			Source:                 string(domain.SourceSIIGO),
+			IsProjection:           false,
+			Reference:              inv.Name,
+			Prefix:                 inv.Prefix,
+			Number:                 inv.Number,
+			Date:                   inv.Date,
+			DueDate:                firstNonEmpty(inv.DueDate, firstPaymentDueDate(inv.Payments)),
+			CustomerIdentification: inv.Customer.Identification,
+			CustomerName:           firstNonEmpty(inv.Customer.Name, inv.Customer.CommercialName),
+			Total:                  inv.Total,
+			Balance:                inv.Balance,
+			Status:                 invoiceStatus(inv.Balance, inv.Total),
+			Category:               categorizeInvoice(itemDescs, inv.Customer.Name),
+			Detail:                 inv.Name + ifNonEmpty(" · ", strings.Join(itemDescs, " | ")),
+		}
+		inserted, err := h.store.UpsertInvoice(record)
 		if err != nil {
-			if siigopkg.IsServerError(err) {
-				slog.Warn("siigo_server_error_skip", "resource", "invoices", "page", page, "error", err)
-				break
-			}
-			return fmt.Errorf("fetching invoices page %d: %w", page, err)
+			return fmt.Errorf("saving invoice %s: %w", inv.ID, err)
 		}
-		for _, inv := range resp.Results {
-			if inv.Date < dateStart || inv.Date > dateEnd {
-				continue
-			}
-			itemDescs := make([]string, 0, len(inv.Items))
-			for _, it := range inv.Items {
-				itemDescs = append(itemDescs, strings.TrimSpace(it.Description))
-			}
-			record := &domain.Invoice{
-				ExternalID:             fmt.Sprintf("siigo-inv-%s", inv.ID),
-				Source:                 string(domain.SourceSIIGO),
-				IsProjection:           false,
-				Reference:              inv.Name,
-				Prefix:                 inv.Prefix,
-				Number:                 inv.Number,
-				Date:                   inv.Date,
-				DueDate:                firstNonEmpty(inv.DueDate, firstPaymentDueDate(inv.Payments)),
-				CustomerIdentification: inv.Customer.Identification,
-				CustomerName:           firstNonEmpty(inv.Customer.Name, inv.Customer.CommercialName),
-				Total:                  inv.Total,
-				Balance:                inv.Balance,
-				Status:                 invoiceStatus(inv.Balance, inv.Total),
-				Category:               categorizeInvoice(itemDescs, inv.Customer.Name),
-				Detail:                 inv.Name + ifNonEmpty(" · ", strings.Join(itemDescs, " | ")),
-			}
-			inserted, err := h.store.UpsertInvoice(record)
-			if err != nil {
-				return fmt.Errorf("saving invoice %s: %w", inv.ID, err)
-			}
-			if inserted {
-				result.InvoicesImported++
-			} else {
-				result.Updated++
-			}
+		mu.Lock()
+		if inserted {
+			result.InvoicesImported++
+		} else {
+			result.Updated++
 		}
-		if page*siigoPageSize >= resp.Pagination.TotalResults {
-			break
-		}
+		mu.Unlock()
 	}
 	return nil
 }
 
-func (h *SiigoHandler) syncPurchases(client *siigopkg.Client, dateStart, dateEnd string, result *domain.SiigoSyncResult) error {
-	for page := 1; ; page++ {
-		resp, err := client.GetPurchases(dateStart, dateEnd, page, siigoPageSize)
+func (h *SiigoHandler) syncPurchases(client *siigopkg.Client, dateStart, dateEnd string, result *domain.SiigoSyncResult, mu *sync.Mutex, sem chan struct{}) error {
+	var page1 *siigopkg.PurchaseListResponse
+	if err := withRetry(siigoRetryAttempts, func() error {
+		sem <- struct{}{}
+		defer func() { <-sem }()
+		var e error
+		page1, e = client.GetPurchases(dateStart, dateEnd, 1, siigoPageSize)
+		return e
+	}); err != nil {
+		return fmt.Errorf("purchases page 1: %w", err)
+	}
+	if err := h.savePurchases(page1.Results, dateStart, dateEnd, result, mu); err != nil {
+		return err
+	}
+
+	totalPages := (page1.Pagination.TotalResults + siigoPageSize - 1) / siigoPageSize
+	if totalPages <= 1 {
+		return nil
+	}
+
+	pageErrs := make([]error, totalPages-1)
+	var wg sync.WaitGroup
+	for page := 2; page <= totalPages; page++ {
+		wg.Add(1)
+		go func(page int) {
+			defer wg.Done()
+			var resp *siigopkg.PurchaseListResponse
+			if err := withRetry(siigoRetryAttempts, func() error {
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				var e error
+				resp, e = client.GetPurchases(dateStart, dateEnd, page, siigoPageSize)
+				return e
+			}); err != nil {
+				pageErrs[page-2] = fmt.Errorf("purchases page %d: %w", page, err)
+				return
+			}
+			pageErrs[page-2] = h.savePurchases(resp.Results, dateStart, dateEnd, result, mu)
+		}(page)
+	}
+	wg.Wait()
+	return errors.Join(pageErrs...)
+}
+
+func (h *SiigoHandler) savePurchases(purchases []siigopkg.Purchase, dateStart, dateEnd string, result *domain.SiigoSyncResult, mu *sync.Mutex) error {
+	for _, pur := range purchases {
+		if pur.Date < dateStart || pur.Date > dateEnd {
+			continue
+		}
+		itemDescs := make([]string, 0, len(pur.Items))
+		for _, it := range pur.Items {
+			itemDescs = append(itemDescs, strings.TrimSpace(it.Description))
+		}
+		record := &domain.Purchase{
+			ExternalID:             fmt.Sprintf("siigo-pur-%s", pur.ID),
+			Source:                 string(domain.SourceSIIGO),
+			IsProjection:           false,
+			Reference:              pur.Name,
+			Prefix:                 pur.Prefix,
+			Number:                 pur.Number,
+			Date:                   pur.Date,
+			DueDate:                firstNonEmpty(pur.DueDate, firstPaymentDueDate(pur.Payments)),
+			ProviderIdentification: pur.Provider.Identification,
+			ProviderName:           firstNonEmpty(pur.Provider.Name, pur.Provider.CommercialName),
+			Total:                  pur.Total,
+			Balance:                pur.Balance,
+			Status:                 invoiceStatus(pur.Balance, pur.Total),
+			Category:               categorizePurchase(itemDescs, pur.Provider.Name),
+			Detail:                 pur.Name + ifNonEmpty(" · ", strings.Join(itemDescs, " | ")),
+		}
+		inserted, err := h.store.UpsertPurchase(record)
 		if err != nil {
-			if siigopkg.IsServerError(err) {
-				slog.Warn("siigo_server_error_skip", "resource", "purchases", "page", page, "error", err)
-				break
-			}
-			return fmt.Errorf("fetching purchases page %d: %w", page, err)
+			return fmt.Errorf("saving purchase %s: %w", pur.ID, err)
 		}
-		for _, pur := range resp.Results {
-			if pur.Date < dateStart || pur.Date > dateEnd {
-				continue
-			}
-			itemDescs := make([]string, 0, len(pur.Items))
-			for _, it := range pur.Items {
-				itemDescs = append(itemDescs, strings.TrimSpace(it.Description))
-			}
-			record := &domain.Purchase{
-				ExternalID:             fmt.Sprintf("siigo-pur-%s", pur.ID),
-				Source:                 string(domain.SourceSIIGO),
-				IsProjection:           false,
-				Reference:              pur.Name,
-				Prefix:                 pur.Prefix,
-				Number:                 pur.Number,
-				Date:                   pur.Date,
-				DueDate:                firstNonEmpty(pur.DueDate, firstPaymentDueDate(pur.Payments)),
-				ProviderIdentification: pur.Provider.Identification,
-				ProviderName:           firstNonEmpty(pur.Provider.Name, pur.Provider.CommercialName),
-				Total:                  pur.Total,
-				Balance:                pur.Balance,
-				Status:                 invoiceStatus(pur.Balance, pur.Total),
-				Category:               categorizePurchase(itemDescs, pur.Provider.Name),
-				Detail:                 pur.Name + ifNonEmpty(" · ", strings.Join(itemDescs, " | ")),
-			}
-			inserted, err := h.store.UpsertPurchase(record)
-			if err != nil {
-				return fmt.Errorf("saving purchase %s: %w", pur.ID, err)
-			}
-			if inserted {
-				result.PurchasesImported++
-			} else {
-				result.Updated++
-			}
+		mu.Lock()
+		if inserted {
+			result.PurchasesImported++
+		} else {
+			result.Updated++
 		}
-		if page*siigoPageSize >= resp.Pagination.TotalResults {
-			break
-		}
+		mu.Unlock()
 	}
 	return nil
 }
 
-func (h *SiigoHandler) syncVouchers(client *siigopkg.Client, dateStart, dateEnd string, result *domain.SiigoSyncResult) error {
-	for page := 1; ; page++ {
-		resp, err := client.GetVouchers(dateStart, dateEnd, page, siigoPageSize)
+func (h *SiigoHandler) syncVouchers(client *siigopkg.Client, dateStart, dateEnd string, result *domain.SiigoSyncResult, mu *sync.Mutex, sem chan struct{}) error {
+	var page1 *siigopkg.VoucherListResponse
+	if err := withRetry(siigoRetryAttempts, func() error {
+		sem <- struct{}{}
+		defer func() { <-sem }()
+		var e error
+		page1, e = client.GetVouchers(dateStart, dateEnd, 1, siigoPageSize)
+		return e
+	}); err != nil {
+		return fmt.Errorf("vouchers page 1: %w", err)
+	}
+	if err := h.saveVouchers(page1.Results, dateStart, dateEnd, result, mu); err != nil {
+		return err
+	}
+
+	totalPages := (page1.Pagination.TotalResults + siigoPageSize - 1) / siigoPageSize
+	if totalPages <= 1 {
+		return nil
+	}
+
+	pageErrs := make([]error, totalPages-1)
+	var wg sync.WaitGroup
+	for page := 2; page <= totalPages; page++ {
+		wg.Add(1)
+		go func(page int) {
+			defer wg.Done()
+			var resp *siigopkg.VoucherListResponse
+			if err := withRetry(siigoRetryAttempts, func() error {
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				var e error
+				resp, e = client.GetVouchers(dateStart, dateEnd, page, siigoPageSize)
+				return e
+			}); err != nil {
+				pageErrs[page-2] = fmt.Errorf("vouchers page %d: %w", page, err)
+				return
+			}
+			pageErrs[page-2] = h.saveVouchers(resp.Results, dateStart, dateEnd, result, mu)
+		}(page)
+	}
+	wg.Wait()
+	return errors.Join(pageErrs...)
+}
+
+func (h *SiigoHandler) saveVouchers(vouchers []siigopkg.Voucher, dateStart, dateEnd string, result *domain.SiigoSyncResult, mu *sync.Mutex) error {
+	for _, v := range vouchers {
+		if v.Date < dateStart || v.Date > dateEnd {
+			continue
+		}
+		itemDescs := make([]string, 0, len(v.Items))
+		for _, it := range v.Items {
+			if s := strings.TrimSpace(it.Description); s != "" {
+				itemDescs = append(itemDescs, s)
+			}
+		}
+		t := &domain.Transaction{
+			Date:         v.Date,
+			Description:  v.Name,
+			Reference:    v.Name,
+			Category:     categorizeInvoice(itemDescs, v.Customer.Name),
+			Type:         domain.TypeIngreso,
+			Amount:       voucherTotal(v.Total, v.Items, "Debit"),
+			Status:       domain.StatusCompleted,
+			Detail:       v.Name + ifNonEmpty(" · ", strings.Join(itemDescs, " | ")),
+			Source:       domain.SourceSIIGO,
+			ExternalID:   fmt.Sprintf("siigo-rc-%s", v.ID),
+			IsProjection: false,
+		}
+		inserted, err := h.store.ImportTransaction(t)
 		if err != nil {
-			if siigopkg.IsServerError(err) {
-				slog.Warn("siigo_server_error_skip", "resource", "vouchers", "page", page, "error", err)
-				break
-			}
-			return fmt.Errorf("fetching vouchers page %d: %w", page, err)
+			return fmt.Errorf("saving voucher %s: %w", v.ID, err)
 		}
-		for _, v := range resp.Results {
-			if v.Date < dateStart || v.Date > dateEnd {
-				continue
-			}
-			itemDescs := make([]string, 0, len(v.Items))
-			for _, it := range v.Items {
-				if s := strings.TrimSpace(it.Description); s != "" {
-					itemDescs = append(itemDescs, s)
-				}
-			}
-			t := &domain.Transaction{
-				Date:         v.Date,
-				Description:  v.Name,
-				Reference:    v.Name,
-				Category:     categorizeInvoice(itemDescs, v.Customer.Name),
-				Type:         domain.TypeIngreso,
-				Amount:       voucherTotal(v.Total, v.Items, "Debit"),
-				Status:       domain.StatusCompleted,
-				Detail:       v.Name + ifNonEmpty(" · ", strings.Join(itemDescs, " | ")),
-				Source:       domain.SourceSIIGO,
-				ExternalID:   fmt.Sprintf("siigo-rc-%s", v.ID),
-				IsProjection: false,
-			}
-			inserted, err := h.store.ImportTransaction(t)
-			if err != nil {
-				return fmt.Errorf("saving voucher %s: %w", v.ID, err)
-			}
-			if inserted {
-				result.VouchersImported++
-			} else {
-				result.Updated++
-			}
+		mu.Lock()
+		if inserted {
+			result.VouchersImported++
+		} else {
+			result.Updated++
 		}
-		if page*siigoPageSize >= resp.Pagination.TotalResults {
-			break
-		}
+		mu.Unlock()
 	}
 	return nil
 }
 
-func (h *SiigoHandler) syncPaymentReceipts(client *siigopkg.Client, dateStart, dateEnd string, result *domain.SiigoSyncResult) error {
-	for page := 1; ; page++ {
-		resp, err := client.GetPaymentReceipts(dateStart, dateEnd, page, siigoPageSize)
+func (h *SiigoHandler) syncPaymentReceipts(client *siigopkg.Client, dateStart, dateEnd string, result *domain.SiigoSyncResult, mu *sync.Mutex, sem chan struct{}) error {
+	var page1 *siigopkg.PaymentReceiptListResponse
+	if err := withRetry(siigoRetryAttempts, func() error {
+		sem <- struct{}{}
+		defer func() { <-sem }()
+		var e error
+		page1, e = client.GetPaymentReceipts(dateStart, dateEnd, 1, siigoPageSize)
+		return e
+	}); err != nil {
+		return fmt.Errorf("payment receipts page 1: %w", err)
+	}
+	if err := h.savePaymentReceipts(page1.Results, dateStart, dateEnd, result, mu); err != nil {
+		return err
+	}
+
+	totalPages := (page1.Pagination.TotalResults + siigoPageSize - 1) / siigoPageSize
+	if totalPages <= 1 {
+		return nil
+	}
+
+	pageErrs := make([]error, totalPages-1)
+	var wg sync.WaitGroup
+	for page := 2; page <= totalPages; page++ {
+		wg.Add(1)
+		go func(page int) {
+			defer wg.Done()
+			var resp *siigopkg.PaymentReceiptListResponse
+			if err := withRetry(siigoRetryAttempts, func() error {
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				var e error
+				resp, e = client.GetPaymentReceipts(dateStart, dateEnd, page, siigoPageSize)
+				return e
+			}); err != nil {
+				pageErrs[page-2] = fmt.Errorf("payment receipts page %d: %w", page, err)
+				return
+			}
+			pageErrs[page-2] = h.savePaymentReceipts(resp.Results, dateStart, dateEnd, result, mu)
+		}(page)
+	}
+	wg.Wait()
+	return errors.Join(pageErrs...)
+}
+
+func (h *SiigoHandler) savePaymentReceipts(receipts []siigopkg.PaymentReceipt, dateStart, dateEnd string, result *domain.SiigoSyncResult, mu *sync.Mutex) error {
+	for _, pr := range receipts {
+		if pr.Date < dateStart || pr.Date > dateEnd {
+			continue
+		}
+		itemDescs := make([]string, 0, len(pr.Items))
+		for _, it := range pr.Items {
+			if s := strings.TrimSpace(it.Description); s != "" {
+				itemDescs = append(itemDescs, s)
+			}
+		}
+		t := &domain.Transaction{
+			Date:         pr.Date,
+			Description:  pr.Name,
+			Reference:    pr.Name,
+			Category:     categorizePurchase(itemDescs, pr.Provider.Name),
+			Type:         domain.TypeEgreso,
+			Amount:       voucherTotal(pr.Total, pr.Items, "Credit"),
+			Status:       domain.StatusCompleted,
+			Detail:       pr.Name + ifNonEmpty(" · ", strings.Join(itemDescs, " | ")),
+			Source:       domain.SourceSIIGO,
+			ExternalID:   fmt.Sprintf("siigo-rp-%s", pr.ID),
+			IsProjection: false,
+		}
+		inserted, err := h.store.ImportTransaction(t)
 		if err != nil {
-			if siigopkg.IsServerError(err) {
-				slog.Warn("siigo_server_error_skip", "resource", "payment_receipts", "page", page, "error", err)
-				break
-			}
-			return fmt.Errorf("fetching payment receipts page %d: %w", page, err)
+			return fmt.Errorf("saving payment receipt %s: %w", pr.ID, err)
 		}
-		for _, pr := range resp.Results {
-			if pr.Date < dateStart || pr.Date > dateEnd {
-				continue
-			}
-			itemDescs := make([]string, 0, len(pr.Items))
-			for _, it := range pr.Items {
-				if s := strings.TrimSpace(it.Description); s != "" {
-					itemDescs = append(itemDescs, s)
-				}
-			}
-			t := &domain.Transaction{
-				Date:         pr.Date,
-				Description:  pr.Name,
-				Reference:    pr.Name,
-				Category:     categorizePurchase(itemDescs, pr.Provider.Name),
-				Type:         domain.TypeEgreso,
-				Amount:       voucherTotal(pr.Total, pr.Items, "Credit"),
-				Status:       domain.StatusCompleted,
-				Detail:       pr.Name + ifNonEmpty(" · ", strings.Join(itemDescs, " | ")),
-				Source:       domain.SourceSIIGO,
-				ExternalID:   fmt.Sprintf("siigo-rp-%s", pr.ID),
-				IsProjection: false,
-			}
-			inserted, err := h.store.ImportTransaction(t)
-			if err != nil {
-				return fmt.Errorf("saving payment receipt %s: %w", pr.ID, err)
-			}
-			if inserted {
-				result.PaymentReceiptsImported++
-			} else {
-				result.Updated++
-			}
+		mu.Lock()
+		if inserted {
+			result.PaymentReceiptsImported++
+		} else {
+			result.Updated++
 		}
-		if page*siigoPageSize >= resp.Pagination.TotalResults {
-			break
-		}
+		mu.Unlock()
 	}
 	return nil
 }
 
-// ifNonEmpty returns prefix+s when s is non-empty, empty string otherwise.
+// ── helpers ───────────────────────────────────────────────────────────────────
+
 func firstNonEmpty(vals ...string) string {
 	for _, v := range vals {
 		if v != "" {
@@ -551,8 +708,6 @@ func invoiceStatus(balance, total float64) domain.TransactionStatus {
 	return domain.StatusPending
 }
 
-// categoryKeywords maps lowercase keywords found in item descriptions or provider/customer
-// names to a canonical category name.
 var purchaseCategoryKeywords = []struct {
 	keywords []string
 	category string
