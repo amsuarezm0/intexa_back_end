@@ -71,7 +71,7 @@ Base path: `/api/v1`
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/dashboard` | Balance, charts, top expense categories, pending alerts |
+| `GET` | `/dashboard` | Balance, charts, all expense categories by %, pending alerts |
 | `GET` | `/cashflow` | Daily inflow/outflow, projected balance, pending alerts |
 | `GET` | `/reports` | Financial reports by period (monthly, quarterly, annual) |
 | `GET` | `/reports/export` | Export report data |
