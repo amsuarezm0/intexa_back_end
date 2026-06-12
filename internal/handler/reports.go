@@ -281,9 +281,6 @@ func buildPieSlices(totals []domain.CategoryTotal) []domain.PieSlice {
 		}
 		pie[0].Value = math.Round((pie[0].Value+(100-sum))*10) / 10
 	}
-	if len(pie) > 5 {
-		pie = pie[:5]
-	}
 	return pie
 }
 

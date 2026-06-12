@@ -2,6 +2,7 @@ package handler
 
 import (
 	"fmt"
+	"math"
 	"net/http"
 	"sort"
 	"time"
@@ -106,17 +107,23 @@ func (h *DashboardHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Expense pie: top 5 categories by % of total (current month)
+	// Expense pie: all categories by % of total (current month)
 	var totalExp float64
 	for _, ct := range catTotals {
 		totalExp += ct.Amount
 	}
 	pie := make([]domain.PieSlice, 0, len(catTotals))
 	for _, ct := range catTotals {
-		pie = append(pie, domain.PieSlice{Name: ct.Category, Value: pct(ct.Amount, totalExp)})
+		if p := pct(ct.Amount, totalExp); p > 0 {
+			pie = append(pie, domain.PieSlice{Name: ct.Category, Value: p})
+		}
 	}
-	if len(pie) > 5 {
-		pie = pie[:5]
+	if len(pie) > 0 {
+		var sum float64
+		for _, s := range pie {
+			sum += s.Value
+		}
+		pie[0].Value = math.Round((pie[0].Value+(100-sum))*10) / 10
 	}
 
 	// Alerts from pending manual transactions (overdue >= 5 days)
