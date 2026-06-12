@@ -292,6 +292,7 @@ type SiigoSyncResult struct {
 	VouchersImported        int           `json:"vouchersImported"`
 	PaymentReceiptsImported int           `json:"paymentReceiptsImported"`
 	Updated                 int           `json:"updated"`
+	Errors                  []string      `json:"errors,omitempty"`
 }
 
 type ActivityLog struct {

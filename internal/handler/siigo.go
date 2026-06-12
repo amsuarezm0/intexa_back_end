@@ -171,14 +171,14 @@ func (h *SiigoHandler) Status(w http.ResponseWriter, r *http.Request) {
 func (h *SiigoHandler) Sync(w http.ResponseWriter, r *http.Request) {
 	var req domain.SiigoSyncRequest
 	if err := decode(r, &req); err != nil {
-		jsonError(w, "invalid request body", http.StatusBadRequest)
+		jsonError(w, "Cuerpo de solicitud inválido", http.StatusBadRequest)
 		return
 	}
 	if req.Mode == "" {
 		req.Mode = domain.SyncModeIncremental
 	}
 	if req.Mode == domain.SyncModeBootstrap && req.DateStart == "" {
-		jsonError(w, "dateStart is required for bootstrap mode", http.StatusBadRequest)
+		jsonError(w, "dateStart es requerido para el modo bootstrap", http.StatusBadRequest)
 		return
 	}
 
@@ -190,14 +190,14 @@ func (h *SiigoHandler) Sync(w http.ResponseWriter, r *http.Request) {
 
 	dateStart, dateEnd, err := h.resolveDates(req.Mode, req.DateStart)
 	if err != nil {
-		jsonError(w, fmt.Sprintf("could not resolve sync window: %v", err), http.StatusInternalServerError)
+		jsonError(w, fmt.Sprintf("No se pudo determinar el rango de fechas: %v", err), http.StatusInternalServerError)
 		return
 	}
 
 	actor, initial := actorFrom(r)
 	result, err := h.runSync(client, req.Mode, dateStart, dateEnd, actor, initial)
 	if err != nil {
-		jsonError(w, fmt.Sprintf("sync failed: %v", err), http.StatusBadGateway)
+		jsonError(w, "Error al guardar datos de sincronización", http.StatusInternalServerError)
 		return
 	}
 	jsonOK(w, result)
@@ -216,11 +216,11 @@ func (h *SiigoHandler) ensureClient() (*siigopkg.Client, error) {
 
 	cfg, err := h.store.GetSiigoConfig()
 	if err != nil || cfg == nil || cfg.AccessKey == "" {
-		return nil, fmt.Errorf("not connected to Siigo — call /siigo/connect first")
+		return nil, fmt.Errorf("no hay conexión con Siigo — configure las credenciales primero")
 	}
 	c := siigopkg.NewClient(cfg.UserName, cfg.AccessKey, cfg.PartnerID)
 	if err := c.Connect(); err != nil {
-		return nil, fmt.Errorf("siigo re-authentication failed: %w", err)
+		return nil, fmt.Errorf("error de reautenticación con Siigo: %w", err)
 	}
 	h.mu.Lock()
 	h.client = c
@@ -266,11 +266,36 @@ func withRetry(attempts int, fn func() error) error {
 	return err
 }
 
+// friendlySiigoErr translates a Siigo API error into a short Spanish description.
+func friendlySiigoErr(err error) string {
+	s := err.Error()
+	switch {
+	case strings.Contains(s, "document_query_service"):
+		return "servicio de Siigo no disponible temporalmente"
+	case strings.Contains(s, "unhandled_error"):
+		return "error interno en Siigo"
+	case strings.Contains(s, "context deadline exceeded"), strings.Contains(s, "Client.Timeout"):
+		return "tiempo de espera agotado"
+	case strings.Contains(s, "error 503"):
+		return "servicio no disponible (503)"
+	case strings.Contains(s, "error 500"):
+		return "error interno del servidor (500)"
+	case strings.Contains(s, "error 401"), strings.Contains(s, "error 403"):
+		return "error de autenticación"
+	default:
+		return "error de comunicación con Siigo"
+	}
+}
+
+func siigoPageErr(docType string, page int, err error) string {
+	return fmt.Sprintf("%s — página %d: %s", docType, page, friendlySiigoErr(err))
+}
+
 // runSync fetches all pages for the given window concurrently and upserts into the store.
 // All four resource types run in parallel; within each type all pages run in parallel.
 // A shared semaphore caps total concurrent Siigo requests to siigoMaxConcurrent.
-// Every failed page is retried up to siigoRetryAttempts times before being counted as an error.
-// Errors from all resources are collected and joined so no partial failure is silently dropped.
+// Siigo API failures are retried up to siigoRetryAttempts times; exhausted pages are recorded
+// in result.Errors (Spanish) without aborting the overall sync. Only DB/infra errors propagate.
 func (h *SiigoHandler) runSync(client *siigopkg.Client, mode domain.SiigoSyncMode, dateStart, dateEnd, actor, initial string) (*domain.SiigoSyncResult, error) {
 	result := &domain.SiigoSyncResult{Mode: mode, DateStart: dateStart, DateEnd: dateEnd}
 	var resultMu sync.Mutex
@@ -283,18 +308,19 @@ func (h *SiigoHandler) runSync(client *siigopkg.Client, mode domain.SiigoSyncMod
 		func() error { return h.syncPaymentReceipts(client, dateStart, dateEnd, result, &resultMu, sem) },
 	}
 
-	errs := make([]error, len(syncs))
+	dbErrs := make([]error, len(syncs))
 	var wg sync.WaitGroup
 	for i, fn := range syncs {
 		wg.Add(1)
 		go func(i int, fn func() error) {
 			defer wg.Done()
-			errs[i] = fn()
+			dbErrs[i] = fn()
 		}(i, fn)
 	}
 	wg.Wait()
 
-	if err := errors.Join(errs...); err != nil {
+	// DB/infra errors are fatal — Siigo API page errors are already in result.Errors
+	if err := errors.Join(dbErrs...); err != nil {
 		return result, err
 	}
 
@@ -306,17 +332,27 @@ func (h *SiigoHandler) runSync(client *siigopkg.Client, mode domain.SiigoSyncMod
 			result.VouchersImported, result.PaymentReceiptsImported, result.Updated),
 		Module: "Integración", Color: "bg-green-500",
 	})
-	slog.Info("siigo_sync_complete",
-		"mode",                      mode,
-		"actor",                     actor,
-		"invoices_imported",         result.InvoicesImported,
-		"purchases_imported",        result.PurchasesImported,
-		"vouchers_imported",         result.VouchersImported,
-		"payment_receipts_imported", result.PaymentReceiptsImported,
-		"updated",                   result.Updated,
-		"date_start",                dateStart,
-		"date_end",                  dateEnd,
-	)
+	if len(result.Errors) > 0 {
+		slog.Warn("siigo_sync_partial",
+			"mode",         mode,
+			"actor",        actor,
+			"page_errors",  len(result.Errors),
+			"date_start",   dateStart,
+			"date_end",     dateEnd,
+		)
+	} else {
+		slog.Info("siigo_sync_complete",
+			"mode",                      mode,
+			"actor",                     actor,
+			"invoices_imported",         result.InvoicesImported,
+			"purchases_imported",        result.PurchasesImported,
+			"vouchers_imported",         result.VouchersImported,
+			"payment_receipts_imported", result.PaymentReceiptsImported,
+			"updated",                   result.Updated,
+			"date_start",                dateStart,
+			"date_end",                  dateEnd,
+		)
+	}
 	return result, nil
 }
 
@@ -329,7 +365,10 @@ func (h *SiigoHandler) syncInvoices(client *siigopkg.Client, dateStart, dateEnd 
 		page1, e = client.GetInvoices(dateStart, dateEnd, 1, siigoPageSize)
 		return e
 	}); err != nil {
-		return fmt.Errorf("invoices page 1: %w", err)
+		mu.Lock()
+		result.Errors = append(result.Errors, siigoPageErr("Facturas de Venta (FV)", 1, err))
+		mu.Unlock()
+		return nil
 	}
 	if err := h.saveInvoices(page1.Results, dateStart, dateEnd, result, mu); err != nil {
 		return err
@@ -340,7 +379,7 @@ func (h *SiigoHandler) syncInvoices(client *siigopkg.Client, dateStart, dateEnd 
 		return nil
 	}
 
-	pageErrs := make([]error, totalPages-1)
+	dbErrs := make([]error, totalPages-1)
 	var wg sync.WaitGroup
 	for page := 2; page <= totalPages; page++ {
 		wg.Add(1)
@@ -354,14 +393,16 @@ func (h *SiigoHandler) syncInvoices(client *siigopkg.Client, dateStart, dateEnd 
 				resp, e = client.GetInvoices(dateStart, dateEnd, page, siigoPageSize)
 				return e
 			}); err != nil {
-				pageErrs[page-2] = fmt.Errorf("invoices page %d: %w", page, err)
+				mu.Lock()
+				result.Errors = append(result.Errors, siigoPageErr("Facturas de Venta (FV)", page, err))
+				mu.Unlock()
 				return
 			}
-			pageErrs[page-2] = h.saveInvoices(resp.Results, dateStart, dateEnd, result, mu)
+			dbErrs[page-2] = h.saveInvoices(resp.Results, dateStart, dateEnd, result, mu)
 		}(page)
 	}
 	wg.Wait()
-	return errors.Join(pageErrs...)
+	return errors.Join(dbErrs...)
 }
 
 func (h *SiigoHandler) saveInvoices(invoices []siigopkg.Invoice, dateStart, dateEnd string, result *domain.SiigoSyncResult, mu *sync.Mutex) error {
@@ -392,7 +433,7 @@ func (h *SiigoHandler) saveInvoices(invoices []siigopkg.Invoice, dateStart, date
 		}
 		inserted, err := h.store.UpsertInvoice(record)
 		if err != nil {
-			return fmt.Errorf("saving invoice %s: %w", inv.ID, err)
+			return fmt.Errorf("error al guardar factura de venta %s: %w", inv.ID, err)
 		}
 		mu.Lock()
 		if inserted {
@@ -414,7 +455,10 @@ func (h *SiigoHandler) syncPurchases(client *siigopkg.Client, dateStart, dateEnd
 		page1, e = client.GetPurchases(dateStart, dateEnd, 1, siigoPageSize)
 		return e
 	}); err != nil {
-		return fmt.Errorf("purchases page 1: %w", err)
+		mu.Lock()
+		result.Errors = append(result.Errors, siigoPageErr("Facturas de Compra (FC)", 1, err))
+		mu.Unlock()
+		return nil
 	}
 	if err := h.savePurchases(page1.Results, dateStart, dateEnd, result, mu); err != nil {
 		return err
@@ -425,7 +469,7 @@ func (h *SiigoHandler) syncPurchases(client *siigopkg.Client, dateStart, dateEnd
 		return nil
 	}
 
-	pageErrs := make([]error, totalPages-1)
+	dbErrs := make([]error, totalPages-1)
 	var wg sync.WaitGroup
 	for page := 2; page <= totalPages; page++ {
 		wg.Add(1)
@@ -439,14 +483,16 @@ func (h *SiigoHandler) syncPurchases(client *siigopkg.Client, dateStart, dateEnd
 				resp, e = client.GetPurchases(dateStart, dateEnd, page, siigoPageSize)
 				return e
 			}); err != nil {
-				pageErrs[page-2] = fmt.Errorf("purchases page %d: %w", page, err)
+				mu.Lock()
+				result.Errors = append(result.Errors, siigoPageErr("Facturas de Compra (FC)", page, err))
+				mu.Unlock()
 				return
 			}
-			pageErrs[page-2] = h.savePurchases(resp.Results, dateStart, dateEnd, result, mu)
+			dbErrs[page-2] = h.savePurchases(resp.Results, dateStart, dateEnd, result, mu)
 		}(page)
 	}
 	wg.Wait()
-	return errors.Join(pageErrs...)
+	return errors.Join(dbErrs...)
 }
 
 func (h *SiigoHandler) savePurchases(purchases []siigopkg.Purchase, dateStart, dateEnd string, result *domain.SiigoSyncResult, mu *sync.Mutex) error {
@@ -477,7 +523,7 @@ func (h *SiigoHandler) savePurchases(purchases []siigopkg.Purchase, dateStart, d
 		}
 		inserted, err := h.store.UpsertPurchase(record)
 		if err != nil {
-			return fmt.Errorf("saving purchase %s: %w", pur.ID, err)
+			return fmt.Errorf("error al guardar factura de compra %s: %w", pur.ID, err)
 		}
 		mu.Lock()
 		if inserted {
@@ -499,7 +545,10 @@ func (h *SiigoHandler) syncVouchers(client *siigopkg.Client, dateStart, dateEnd 
 		page1, e = client.GetVouchers(dateStart, dateEnd, 1, siigoPageSize)
 		return e
 	}); err != nil {
-		return fmt.Errorf("vouchers page 1: %w", err)
+		mu.Lock()
+		result.Errors = append(result.Errors, siigoPageErr("Recibos de Cobro (RC)", 1, err))
+		mu.Unlock()
+		return nil
 	}
 	if err := h.saveVouchers(page1.Results, dateStart, dateEnd, result, mu); err != nil {
 		return err
@@ -510,7 +559,7 @@ func (h *SiigoHandler) syncVouchers(client *siigopkg.Client, dateStart, dateEnd 
 		return nil
 	}
 
-	pageErrs := make([]error, totalPages-1)
+	dbErrs := make([]error, totalPages-1)
 	var wg sync.WaitGroup
 	for page := 2; page <= totalPages; page++ {
 		wg.Add(1)
@@ -524,14 +573,16 @@ func (h *SiigoHandler) syncVouchers(client *siigopkg.Client, dateStart, dateEnd 
 				resp, e = client.GetVouchers(dateStart, dateEnd, page, siigoPageSize)
 				return e
 			}); err != nil {
-				pageErrs[page-2] = fmt.Errorf("vouchers page %d: %w", page, err)
+				mu.Lock()
+				result.Errors = append(result.Errors, siigoPageErr("Recibos de Cobro (RC)", page, err))
+				mu.Unlock()
 				return
 			}
-			pageErrs[page-2] = h.saveVouchers(resp.Results, dateStart, dateEnd, result, mu)
+			dbErrs[page-2] = h.saveVouchers(resp.Results, dateStart, dateEnd, result, mu)
 		}(page)
 	}
 	wg.Wait()
-	return errors.Join(pageErrs...)
+	return errors.Join(dbErrs...)
 }
 
 func (h *SiigoHandler) saveVouchers(vouchers []siigopkg.Voucher, dateStart, dateEnd string, result *domain.SiigoSyncResult, mu *sync.Mutex) error {
@@ -560,7 +611,7 @@ func (h *SiigoHandler) saveVouchers(vouchers []siigopkg.Voucher, dateStart, date
 		}
 		inserted, err := h.store.ImportTransaction(t)
 		if err != nil {
-			return fmt.Errorf("saving voucher %s: %w", v.ID, err)
+			return fmt.Errorf("error al guardar recibo de cobro %s: %w", v.ID, err)
 		}
 		mu.Lock()
 		if inserted {
@@ -582,7 +633,10 @@ func (h *SiigoHandler) syncPaymentReceipts(client *siigopkg.Client, dateStart, d
 		page1, e = client.GetPaymentReceipts(dateStart, dateEnd, 1, siigoPageSize)
 		return e
 	}); err != nil {
-		return fmt.Errorf("payment receipts page 1: %w", err)
+		mu.Lock()
+		result.Errors = append(result.Errors, siigoPageErr("Recibos de Pago (RP)", 1, err))
+		mu.Unlock()
+		return nil
 	}
 	if err := h.savePaymentReceipts(page1.Results, dateStart, dateEnd, result, mu); err != nil {
 		return err
@@ -593,7 +647,7 @@ func (h *SiigoHandler) syncPaymentReceipts(client *siigopkg.Client, dateStart, d
 		return nil
 	}
 
-	pageErrs := make([]error, totalPages-1)
+	dbErrs := make([]error, totalPages-1)
 	var wg sync.WaitGroup
 	for page := 2; page <= totalPages; page++ {
 		wg.Add(1)
@@ -607,14 +661,16 @@ func (h *SiigoHandler) syncPaymentReceipts(client *siigopkg.Client, dateStart, d
 				resp, e = client.GetPaymentReceipts(dateStart, dateEnd, page, siigoPageSize)
 				return e
 			}); err != nil {
-				pageErrs[page-2] = fmt.Errorf("payment receipts page %d: %w", page, err)
+				mu.Lock()
+				result.Errors = append(result.Errors, siigoPageErr("Recibos de Pago (RP)", page, err))
+				mu.Unlock()
 				return
 			}
-			pageErrs[page-2] = h.savePaymentReceipts(resp.Results, dateStart, dateEnd, result, mu)
+			dbErrs[page-2] = h.savePaymentReceipts(resp.Results, dateStart, dateEnd, result, mu)
 		}(page)
 	}
 	wg.Wait()
-	return errors.Join(pageErrs...)
+	return errors.Join(dbErrs...)
 }
 
 func (h *SiigoHandler) savePaymentReceipts(receipts []siigopkg.PaymentReceipt, dateStart, dateEnd string, result *domain.SiigoSyncResult, mu *sync.Mutex) error {
@@ -643,7 +699,7 @@ func (h *SiigoHandler) savePaymentReceipts(receipts []siigopkg.PaymentReceipt, d
 		}
 		inserted, err := h.store.ImportTransaction(t)
 		if err != nil {
-			return fmt.Errorf("saving payment receipt %s: %w", pr.ID, err)
+			return fmt.Errorf("error al guardar recibo de pago %s: %w", pr.ID, err)
 		}
 		mu.Lock()
 		if inserted {
