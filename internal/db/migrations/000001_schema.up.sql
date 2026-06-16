@@ -199,5 +199,6 @@ INSERT INTO categories (name, type) VALUES
     ('Gastos - Tecnología',    'expense'),
     ('Gastos Operativos',      'expense'),
     ('Marketing',              'expense'),
-    ('Infraestructura',        'expense')
+    ('Infraestructura',        'expense'),
+    ('Nómina',                 'expense')
 ON CONFLICT (name) DO NOTHING;
