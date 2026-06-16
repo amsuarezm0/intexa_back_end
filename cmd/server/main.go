@@ -162,8 +162,9 @@ func main() {
 		})
 	})
 
-	log.Printf("intexa-arca-api listening on :%s", port)
-	if err := http.ListenAndServe(":"+port, r); err != nil {
+	addr := "0.0.0.0:" + port
+	log.Printf("intexa-arca-api listening on %s", addr)
+	if err := http.ListenAndServe(addr, r); err != nil {
 		log.Fatal(err)
 	}
 }
