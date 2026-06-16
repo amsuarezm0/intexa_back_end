@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: intexa-arca-api
+    runtime: go
+    buildCommand: go build -o server ./cmd/server
+    startCommand: ./server
+    envVars:
+      - key: JWT_SECRET
+        generateValue: true
+      - key: DATABASE_URL
+        sync: false
+      - key: ALLOWED_ORIGINS
+        sync: false
