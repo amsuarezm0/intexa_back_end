@@ -241,6 +241,7 @@ type ReportSummary struct {
 type Settings struct {
 	BaseCurrency     string `json:"baseCurrency"`
 	AutoExchangeRate bool   `json:"autoExchangeRate"`
+	Theme            string `json:"theme"`
 }
 
 type BudgetLine struct {

@@ -391,7 +391,8 @@ func (s *Store) CreateUser(u *domain.User) error {
 	_, err := s.pool.Exec(bg(), `
 		INSERT INTO settings (user_id, key, value) VALUES
 		  ($1, 'baseCurrency',     '"COP"'),
-		  ($1, 'autoExchangeRate', 'true')
+		  ($1, 'autoExchangeRate', 'true'),
+		  ($1, 'theme',            '"predeterminado"')
 		ON CONFLICT (user_id, key) DO NOTHING`,
 		u.ID)
 	return err
@@ -492,7 +493,7 @@ func (s *Store) GetCategories() ([]domain.Category, error) {
 // ── Settings ──────────────────────────────────────────────────────────────────
 
 func (s *Store) GetSettings(userID string) (domain.Settings, error) {
-	st := domain.Settings{BaseCurrency: "COP", AutoExchangeRate: true}
+	st := domain.Settings{BaseCurrency: "COP", AutoExchangeRate: true, Theme: "predeterminado"}
 	rows, err := s.pool.Query(bg(), `
 		SELECT key, value FROM settings WHERE user_id=$1`, userID)
 	if err != nil {
@@ -514,16 +515,23 @@ func (s *Store) GetSettings(userID string) (domain.Settings, error) {
 	if v, ok := kv["autoExchangeRate"]; ok {
 		json.Unmarshal(v, &st.AutoExchangeRate)
 	}
+	if v, ok := kv["theme"]; ok {
+		json.Unmarshal(v, &st.Theme)
+	}
 	return st, rows.Err()
 }
 
 func (s *Store) UpdateSettings(userID string, st domain.Settings) error {
+	if st.Theme == "" {
+		st.Theme = "predeterminado"
+	}
 	_, err := s.pool.Exec(bg(), `
 		INSERT INTO settings (user_id, key, value) VALUES
 		  ($1, 'baseCurrency',     to_jsonb($2::text)),
-		  ($1, 'autoExchangeRate', to_jsonb($3::bool))
+		  ($1, 'autoExchangeRate', to_jsonb($3::bool)),
+		  ($1, 'theme',            to_jsonb($4::text))
 		ON CONFLICT (user_id, key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()`,
-		userID, st.BaseCurrency, st.AutoExchangeRate)
+		userID, st.BaseCurrency, st.AutoExchangeRate, st.Theme)
 	return err
 }
 

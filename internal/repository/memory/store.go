@@ -493,7 +493,7 @@ func (s *Store) CreateUser(u *domain.User) error {
 	s.mu.Lock()
 	cp := *u
 	s.users[u.ID] = &cp
-	s.settings[u.ID] = domain.Settings{BaseCurrency: "COP", AutoExchangeRate: true}
+	s.settings[u.ID] = domain.Settings{BaseCurrency: "COP", AutoExchangeRate: true, Theme: "predeterminado"}
 	s.mu.Unlock()
 	return nil
 }
@@ -582,10 +582,13 @@ func (s *Store) GetSettings(userID string) (domain.Settings, error) {
 	if st, ok := s.settings[userID]; ok {
 		return st, nil
 	}
-	return domain.Settings{BaseCurrency: "COP", AutoExchangeRate: true}, nil
+	return domain.Settings{BaseCurrency: "COP", AutoExchangeRate: true, Theme: "predeterminado"}, nil
 }
 
 func (s *Store) UpdateSettings(userID string, st domain.Settings) error {
+	if st.Theme == "" {
+		st.Theme = "predeterminado"
+	}
 	s.mu.Lock()
 	s.settings[userID] = st
 	s.mu.Unlock()
