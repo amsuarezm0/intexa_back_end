@@ -66,15 +66,22 @@ func (h *UsersHandler) Create(w http.ResponseWriter, r *http.Request) {
 	jsonCreated(w, u)
 }
 
+type updateUserRequest struct {
+	Name     string `json:"name"`
+	Role     string `json:"role"`
+	Password string `json:"password"` // optional — when set, the password is changed
+}
+
 func (h *UsersHandler) Update(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	var u domain.User
-	if err := decode(r, &u); err != nil {
+	var req updateUserRequest
+	if err := decode(r, &req); err != nil {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-	u.ID = id
-	ok, err := h.store.UpdateUser(&u)
+
+	// Load the existing user so unspecified fields (e.g. active) are preserved.
+	user, ok, err := h.store.GetUserByID(id)
 	if err != nil {
 		jsonError(w, "internal server error", http.StatusInternalServerError)
 		return
@@ -83,12 +90,35 @@ func (h *UsersHandler) Update(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "user not found", http.StatusNotFound)
 		return
 	}
+	if req.Name != "" {
+		user.Name = req.Name
+	}
+	if req.Role != "" {
+		user.Role = domain.UserRole(req.Role)
+	}
+	if _, err := h.store.UpdateUser(user); err != nil {
+		jsonError(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	if req.Password != "" {
+		hashed, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+		if err != nil {
+			jsonError(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		if _, err := h.store.UpdatePassword(id, string(hashed)); err != nil {
+			jsonError(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+	}
+
 	actor, initial := actorFrom(r)
 	h.store.AddActivityLog(domain.ActivityLog{ //nolint
 		UserName: actor, Initial: initial, Action: "Editó usuario",
 		Module: "Usuarios", Color: "bg-yellow-500",
 	})
-	jsonOK(w, u)
+	jsonOK(w, user)
 }
 
 func (h *UsersHandler) Delete(w http.ResponseWriter, r *http.Request) {

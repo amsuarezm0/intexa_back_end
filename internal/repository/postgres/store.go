@@ -406,6 +406,14 @@ func (s *Store) UpdateUser(u *domain.User) (bool, error) {
 	return tag.RowsAffected() > 0, err
 }
 
+func (s *Store) UpdatePassword(userID, hashedPassword string) (bool, error) {
+	tag, err := s.pool.Exec(bg(), `
+		UPDATE users SET password_hash=$1, updated_at=now()
+		WHERE  id=$2`,
+		hashedPassword, userID)
+	return tag.RowsAffected() > 0, err
+}
+
 func (s *Store) DeleteUser(id string) (bool, error) {
 	// Soft-delete: mark inactive
 	tag, err := s.pool.Exec(bg(),

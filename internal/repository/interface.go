@@ -32,6 +32,7 @@ type Store interface {
 	GetUserByID(id string) (*domain.User, bool, error)
 	CreateUser(u *domain.User) error
 	UpdateUser(u *domain.User) (bool, error)
+	UpdatePassword(userID, hashedPassword string) (bool, error)
 	DeleteUser(id string) (bool, error)
 
 	// ── Access control ───────────────────────────────────────────────────────

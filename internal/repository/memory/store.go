@@ -511,6 +511,17 @@ func (s *Store) UpdateUser(u *domain.User) (bool, error) {
 	return true, nil
 }
 
+func (s *Store) UpdatePassword(userID, hashedPassword string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	u, ok := s.users[userID]
+	if !ok {
+		return false, nil
+	}
+	u.Password = hashedPassword
+	return true, nil
+}
+
 func (s *Store) DeleteUser(id string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
