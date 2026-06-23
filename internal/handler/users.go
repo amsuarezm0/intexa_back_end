@@ -2,9 +2,11 @@ package handler
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/intexa/arca-api/internal/domain"
+	"github.com/intexa/arca-api/internal/middleware"
 	"github.com/intexa/arca-api/internal/repository"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -78,6 +80,24 @@ func (h *UsersHandler) Update(w http.ResponseWriter, r *http.Request) {
 	if err := decode(r, &req); err != nil {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
 		return
+	}
+
+	// Self-service path: non-admins may update only their own record, and only
+	// the password — never name or role (which would allow privilege escalation).
+	claims, _ := middleware.ClaimsFromContext(r.Context())
+	role, _ := claims["role"].(string)
+	if !strings.EqualFold(role, string(domain.RoleAdmin)) {
+		selfID, _ := claims["sub"].(string)
+		if id != selfID {
+			jsonError(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		if req.Password == "" {
+			jsonError(w, "password is required", http.StatusBadRequest)
+			return
+		}
+		req.Name = ""
+		req.Role = ""
 	}
 
 	// Load the existing user so unspecified fields (e.g. active) are preserved.

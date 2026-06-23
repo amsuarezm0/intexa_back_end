@@ -129,6 +129,9 @@ func main() {
 			r.Get("/search", search.Search)
 			r.Get("/settings", settings.Get)
 			r.Put("/settings", settings.Update)
+			// Self-service or admin: the handler enforces that non-admins may
+			// only change their own password (never name/role).
+			r.Put("/users/{id}", users.Update)
 			r.Get("/exchange-rates", exchangeRates.GetRates)
 			r.Get("/categories", settings.GetCategories)
 			r.Get("/siigo/status", siigoH.Status)
@@ -151,7 +154,6 @@ func main() {
 
 				r.Get("/users", users.List)
 				r.Post("/users", users.Create)
-				r.Put("/users/{id}", users.Update)
 				r.Delete("/users/{id}", users.Delete)
 				r.Get("/activity-logs", settings.GetActivityLogs)
 				r.Post("/siigo/connect", siigoH.Connect)
