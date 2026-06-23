@@ -35,28 +35,16 @@ func (h *SettingsHandler) Get(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *SettingsHandler) Update(w http.ResponseWriter, r *http.Request) {
-	userID := userIDFromRequest(r)
 	var s domain.Settings
 	if err := decode(r, &s); err != nil {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-
-	// Compare against the current settings so a theme-only change (theme is a
-	// personal preference) doesn't generate an activity log entry.
-	prev, _ := h.store.GetSettings(userID)
-
-	if err := h.store.UpdateSettings(userID, s); err != nil {
+	// Settings (currency, auto exchange, theme) are personal preferences and are
+	// not recorded in the activity log.
+	if err := h.store.UpdateSettings(userIDFromRequest(r), s); err != nil {
 		jsonError(w, "internal server error", http.StatusInternalServerError)
 		return
-	}
-
-	if s.BaseCurrency != prev.BaseCurrency || s.AutoExchangeRate != prev.AutoExchangeRate {
-		actor, initial := actorFrom(r)
-		h.store.AddActivityLog(domain.ActivityLog{ //nolint
-			UserName: actor, Initial: initial, Action: "Actualizó configuración",
-			Module: "Configuración", Color: "bg-slate-500",
-		})
 	}
 	jsonOK(w, s)
 }
