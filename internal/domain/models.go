@@ -258,10 +258,17 @@ type SiigoConfig struct {
 	AccessKey string    `json:"-"`
 }
 
+// BankAccount is a single named bank balance entry (e.g. "Bancolombia" → 15M).
+type BankAccount struct {
+	Label  string  `json:"label"`
+	Amount float64 `json:"amount"`
+}
+
 type BankBalance struct {
-	Amount    float64   `json:"amount"`
-	UpdatedAt time.Time `json:"updatedAt"`
-	UpdatedBy string    `json:"updatedBy"`
+	Accounts  []BankAccount `json:"accounts"`
+	Amount    float64       `json:"amount"` // total — sum of all account amounts
+	UpdatedAt time.Time     `json:"updatedAt"`
+	UpdatedBy string        `json:"updatedBy"`
 }
 
 type SiigoConnectRequest struct {

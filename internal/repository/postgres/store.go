@@ -713,25 +713,36 @@ func (s *Store) GetOldestPendingOrPartialDate() (string, error) {
 
 func (s *Store) GetBankBalance() (*domain.BankBalance, error) {
 	var b domain.BankBalance
+	var accounts []byte
 	err := s.pool.QueryRow(bg(), `
-		SELECT amount, updated_by, updated_at FROM bank_balance ORDER BY id LIMIT 1`,
-	).Scan(&b.Amount, &b.UpdatedBy, &b.UpdatedAt)
+		SELECT amount, accounts, updated_by, updated_at FROM bank_balance ORDER BY id LIMIT 1`,
+	).Scan(&b.Amount, &accounts, &b.UpdatedBy, &b.UpdatedAt)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, nil
 		}
 		return nil, err
 	}
+	if len(accounts) > 0 {
+		_ = json.Unmarshal(accounts, &b.Accounts)
+	}
 	return &b, nil
 }
 
 func (s *Store) SetBankBalance(b domain.BankBalance) error {
-	_, err := s.pool.Exec(bg(), `
-		INSERT INTO bank_balance (amount, updated_by, updated_at)
-		VALUES ($1, $2, now())
+	accounts, err := json.Marshal(b.Accounts)
+	if err != nil {
+		return err
+	}
+	if b.Accounts == nil {
+		accounts = []byte("[]")
+	}
+	_, err = s.pool.Exec(bg(), `
+		INSERT INTO bank_balance (amount, accounts, updated_by, updated_at)
+		VALUES ($1, $2, $3, now())
 		ON CONFLICT (id) DO UPDATE
-			SET amount=$1, updated_by=$2, updated_at=now()`,
-		b.Amount, b.UpdatedBy)
+			SET amount=$1, accounts=$2, updated_by=$3, updated_at=now()`,
+		b.Amount, accounts, b.UpdatedBy)
 	return err
 }
 

@@ -195,17 +195,29 @@ func (h *DashboardHandler) GetBankBalance(w http.ResponseWriter, r *http.Request
 // PUT /api/v1/dashboard/bank-balance
 func (h *DashboardHandler) UpdateBankBalance(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Amount float64 `json:"amount"`
+		Accounts []domain.BankAccount `json:"accounts"`
+		Amount   float64              `json:"amount"` // legacy single-value clients
 	}
 	if err := decode(r, &req); err != nil {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
 
+	// The total is always derived from the per-bank entries. Legacy clients that
+	// send only `amount` (no accounts) are honoured for backward compatibility.
+	total := req.Amount
+	if len(req.Accounts) > 0 {
+		total = 0
+		for _, a := range req.Accounts {
+			total += a.Amount
+		}
+	}
+
 	updatedBy, _ := actorFrom(r)
 
 	b := domain.BankBalance{
-		Amount:    req.Amount,
+		Accounts:  req.Accounts,
+		Amount:    total,
 		UpdatedAt: time.Now(),
 		UpdatedBy: updatedBy,
 	}
