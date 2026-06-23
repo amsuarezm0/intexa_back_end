@@ -183,11 +183,25 @@ func buildPendingAlerts(pending []*domain.Transaction, now time.Time, minAgeDays
 }
 
 // GET /api/v1/dashboard/bank-balance
+// colombiaTZ is UTC-5 (Colombia has no DST). It anchors "today" for the daily
+// bank-balance update so the result doesn't depend on the server's timezone.
+var colombiaTZ = time.FixedZone("COT", -5*60*60)
+
+func isSameDayCO(a, b time.Time) bool {
+	al, bl := a.In(colombiaTZ), b.In(colombiaTZ)
+	return al.Year() == bl.Year() && al.Month() == bl.Month() && al.Day() == bl.Day()
+}
+
 func (h *DashboardHandler) GetBankBalance(w http.ResponseWriter, r *http.Request) {
 	b, err := h.store.GetBankBalance()
 	if err != nil {
 		jsonError(w, "internal server error", http.StatusInternalServerError)
 		return
+	}
+	// Only surface the balance when its latest update happened today; otherwise
+	// the client treats it as pending for the current day.
+	if b != nil && !isSameDayCO(b.UpdatedAt, time.Now()) {
+		b = nil
 	}
 	jsonOK(w, b)
 }
