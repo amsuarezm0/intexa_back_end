@@ -1,0 +1,2 @@
+# Siigo sync execution history (UTC). Appended automatically by .github/workflows/siigo-sync.yml
+# format: timestamp | http_code status | endpoint | summary

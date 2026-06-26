@@ -1,30 +1,71 @@
 name: Siigo daily sync
 
-# Triggers the Siigo sync on the Render free instance once a day.
-# The HTTP request wakes the sleeping instance and runs the sync synchronously,
-# which an in-process timer could never do (the instance is asleep at that hour).
+# Triggers the Siigo sync on the Render free instance once a day and records
+# the outcome to logs/siigo-sync.log (committed back to the repo) so there is a
+# durable, viewable history that the cron is actually firing. The Render
+# filesystem is ephemeral, so the log has to live in the repo, not on the server.
+#
+# The daily log commit also keeps the repo "active", which prevents GitHub from
+# auto-disabling this scheduled workflow after 60 days of inactivity.
 on:
   schedule:
     # 11:00 UTC = 06:00 America/Bogota (UTC-5). Adjust if the desired hour changes.
     - cron: "0 11 * * *"
   workflow_dispatch: {} # allow manual runs from the Actions tab
 
+# Never let a manual run and the scheduled run push the log concurrently.
+concurrency:
+  group: siigo-sync
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
 jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - name: Trigger Siigo sync
+      - uses: actions/checkout@v4
+
+      - name: Trigger sync and record outcome
         env:
-          API_BASE_URL: ${{ vars.API_BASE_URL }}     # e.g. https://intexa-arca-api.onrender.com
+          API_BASE_URL: ${{ vars.API_BASE_URL }}   # e.g. https://intexa-arca-api.onrender.com
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
-          set -euo pipefail
-          # Retry to absorb Render cold-start latency on the free plan.
-          code=$(curl -sS --fail-with-body \
-            --connect-timeout 30 --max-time 180 \
+          set -uo pipefail
+          endpoint="/api/v1/siigo/sync/cron"
+          ts="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+
+          # No --fail: we capture the HTTP code ourselves so a non-200 still logs.
+          # Retries absorb Render free-tier cold-start latency.
+          code="$(curl -sS --connect-timeout 30 --max-time 180 \
             --retry 5 --retry-delay 20 --retry-all-errors \
             -o /tmp/resp.json -w '%{http_code}' \
-            -X POST "$API_BASE_URL/api/v1/siigo/sync/cron" \
-            -H "X-Cron-Secret: $CRON_SECRET")
-          echo "HTTP $code"
-          cat /tmp/resp.json
+            -X POST "$API_BASE_URL$endpoint" \
+            -H "X-Cron-Secret: $CRON_SECRET")" || code="000"
+
+          if [ "$code" = "200" ]; then
+            status="OK"
+            summary="$(jq -r '"mode=\(.mode) invoices=\(.invoicesImported) purchases=\(.purchasesImported) vouchers=\(.vouchersImported) receipts=\(.paymentReceiptsImported) updated=\(.updated)"' /tmp/resp.json 2>/dev/null || echo "ok")"
+          else
+            status="FAIL"
+            summary="$(jq -r '.error // "unknown error"' /tmp/resp.json 2>/dev/null || tr -d '\n' < /tmp/resp.json)"
+          fi
+
+          line="$ts | $code $status | POST $endpoint | $summary"
+          echo "$line"
+          mkdir -p logs
+          printf '%s\n' "$line" >> logs/siigo-sync.log
+
+          # Commit the log line (push with rebase retry in case of a race).
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add logs/siigo-sync.log
+          git commit -m "chore(log): siigo sync $ts ($status)" || { echo "no changes to commit"; }
+          for i in 1 2 3; do
+            git pull --rebase --autostash origin main && git push origin main && break
+            echo "push attempt $i failed, retrying..."; sleep 5
+          done
+
+          # Surface failures in the Actions UI (after the log is safely committed).
+          [ "$status" = "OK" ] || { echo "::error::Siigo sync returned HTTP $code"; exit 1; }
