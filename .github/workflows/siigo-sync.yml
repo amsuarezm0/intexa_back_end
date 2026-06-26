@@ -34,7 +34,7 @@ jobs:
         run: |
           set -uo pipefail
           endpoint="/api/v1/siigo/sync/cron"
-          ts="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          ts="$(TZ='America/Bogota' date +'%Y-%m-%dT%H:%M:%S%z')"  # Colombia time (UTC-5)
 
           # No --fail: we capture the HTTP code ourselves so a non-200 still logs.
           # Retries absorb Render free-tier cold-start latency.

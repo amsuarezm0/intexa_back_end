@@ -1,2 +1,2 @@
-# Siigo sync execution history (UTC). Appended automatically by .github/workflows/siigo-sync.yml
+# Siigo sync execution history (America/Bogota, UTC-5). Appended automatically by .github/workflows/siigo-sync.yml
 # format: timestamp | http_code status | endpoint | summary
