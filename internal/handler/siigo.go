@@ -1,11 +1,12 @@
 package handler
 
 import (
+	"crypto/subtle"
 	"errors"
 	"fmt"
-	"log"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -20,7 +21,6 @@ const (
 	siigoRetryAttempts = 3
 	siigoMaxConcurrent = 8
 	incrementalDays    = 90  // rolling window for incremental (days back from today)
-	schedulerHour      = 6   // daily sync fires at 06:00 local time
 	reconcileDay       = 1   // reconcile fires on the 1st of each month
 	bootstrapFallback  = 730 // days back when no records exist (2 years)
 )
@@ -55,60 +55,56 @@ func (h *SiigoHandler) AutoConnect(userName, accessKey, partnerID string) error 
 	return h.store.SetSiigoConfig(cfg)
 }
 
-// StartScheduler launches the background sync goroutine. Call once on startup.
-func (h *SiigoHandler) StartScheduler() {
-	go h.runScheduler()
-}
-
-func (h *SiigoHandler) runScheduler() {
-	for {
-		now := time.Now()
-		next := nextFireTime(now)
-		log.Printf("siigo scheduler: next run at %s", next.Format("2006-01-02 15:04"))
-		time.Sleep(time.Until(next))
-
-		mode := domain.SyncModeIncremental
-		if time.Now().Day() == reconcileDay {
-			mode = domain.SyncModeReconcile
-		}
-
-		client, err := h.ensureClient()
-		if err != nil {
-			log.Printf("siigo scheduler: cannot get client: %v", err)
-			continue
-		}
-
-		dateStart, dateEnd, err := h.resolveDates(mode, "")
-		if err != nil {
-			log.Printf("siigo scheduler: cannot resolve dates: %v", err)
-			continue
-		}
-
-		result, err := h.runSync(client, mode, dateStart, dateEnd, "Sistema", "SI")
-		if err != nil {
-			slog.Error("siigo_sync_failed", "mode", mode, "error", err)
-			continue
-		}
-		slog.Info("siigo_sync_done",
-			"mode",                      mode,
-			"invoices_imported",         result.InvoicesImported,
-			"purchases_imported",        result.PurchasesImported,
-			"vouchers_imported",         result.VouchersImported,
-			"payment_receipts_imported", result.PaymentReceiptsImported,
-			"updated",                   result.Updated,
-			"date_start",                dateStart,
-			"date_end",                  dateEnd,
-		)
+// SyncCron is the daily sync entrypoint, triggered by an external scheduler
+// (e.g. a GitHub Actions workflow) via HTTP so it works even though the free
+// Render instance sleeps when idle — the request itself wakes it. Guarded by a
+// shared secret in the X-Cron-Secret header (env CRON_SECRET).
+//
+// POST /api/v1/siigo/sync/cron
+func (h *SiigoHandler) SyncCron(w http.ResponseWriter, r *http.Request) {
+	secret := os.Getenv("CRON_SECRET")
+	if secret == "" || subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Cron-Secret")), []byte(secret)) != 1 {
+		jsonError(w, "unauthorized", http.StatusUnauthorized)
+		return
 	}
-}
 
-// nextFireTime returns the next 06:00 wall-clock time after now.
-func nextFireTime(now time.Time) time.Time {
-	next := time.Date(now.Year(), now.Month(), now.Day(), schedulerHour, 0, 0, 0, now.Location())
-	if !next.After(now) {
-		next = next.Add(24 * time.Hour)
+	mode := domain.SyncModeIncremental
+	if time.Now().Day() == reconcileDay {
+		mode = domain.SyncModeReconcile
 	}
-	return next
+
+	client, err := h.ensureClient()
+	if err != nil {
+		slog.Error("siigo_cron_no_client", "error", err)
+		jsonError(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+
+	dateStart, dateEnd, err := h.resolveDates(mode, "")
+	if err != nil {
+		slog.Error("siigo_cron_dates", "error", err)
+		jsonError(w, fmt.Sprintf("No se pudo determinar el rango de fechas: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	result, err := h.runSync(client, mode, dateStart, dateEnd, "Sistema", "SI")
+	if err != nil {
+		slog.Error("siigo_sync_failed", "mode", mode, "error", err)
+		jsonError(w, "Error al guardar datos de sincronización", http.StatusInternalServerError)
+		return
+	}
+	slog.Info("siigo_sync_done",
+		"mode",                      mode,
+		"trigger",                   "cron",
+		"invoices_imported",         result.InvoicesImported,
+		"purchases_imported",        result.PurchasesImported,
+		"vouchers_imported",         result.VouchersImported,
+		"payment_receipts_imported", result.PaymentReceiptsImported,
+		"updated",                   result.Updated,
+		"date_start",                dateStart,
+		"date_end",                  dateEnd,
+	)
+	jsonOK(w, result)
 }
 
 // POST /api/v1/siigo/connect

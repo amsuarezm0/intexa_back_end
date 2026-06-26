@@ -1,0 +1,30 @@
+name: Siigo daily sync
+
+# Triggers the Siigo sync on the Render free instance once a day.
+# The HTTP request wakes the sleeping instance and runs the sync synchronously,
+# which an in-process timer could never do (the instance is asleep at that hour).
+on:
+  schedule:
+    # 11:00 UTC = 06:00 America/Bogota (UTC-5). Adjust if the desired hour changes.
+    - cron: "0 11 * * *"
+  workflow_dispatch: {} # allow manual runs from the Actions tab
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Siigo sync
+        env:
+          API_BASE_URL: ${{ vars.API_BASE_URL }}     # e.g. https://intexa-arca-api.onrender.com
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          # Retry to absorb Render cold-start latency on the free plan.
+          code=$(curl -sS --fail-with-body \
+            --connect-timeout 30 --max-time 180 \
+            --retry 5 --retry-delay 20 --retry-all-errors \
+            -o /tmp/resp.json -w '%{http_code}' \
+            -X POST "$API_BASE_URL/api/v1/siigo/sync/cron" \
+            -H "X-Cron-Secret: $CRON_SECRET")
+          echo "HTTP $code"
+          cat /tmp/resp.json

@@ -76,8 +76,6 @@ func main() {
 			log.Printf("siigo auto-connect failed: %v", err)
 		} else {
 			log.Println("siigo: connected")
-			siigoH.StartScheduler()
-			log.Println("siigo: daily scheduler started (06:00, reconcile on 1st)")
 		}
 	}
 
@@ -106,6 +104,9 @@ func main() {
 		// Public
 		r.Post("/auth/login", auth.Login)
 		r.Post("/auth/microsoft", auth.MicrosoftLogin)
+		// Daily Siigo sync, triggered by an external scheduler (GitHub Actions).
+		// Not JWT-protected — guarded by the X-Cron-Secret shared secret instead.
+		r.Post("/siigo/sync/cron", siigoH.SyncCron)
 
 		// Protected
 		r.Group(func(r chi.Router) {

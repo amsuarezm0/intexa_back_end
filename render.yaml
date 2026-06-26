@@ -19,3 +19,5 @@ services:
         sync: false
       - key: SIIGO_PARTNER_ID
         sync: false
+      - key: CRON_SECRET
+        sync: false
