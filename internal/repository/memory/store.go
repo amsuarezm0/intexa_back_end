@@ -71,7 +71,7 @@ func (s *Store) seed() {
 		Name:      "Admin Local",
 		Email:     "admin@arca.local",
 		Role:      domain.RoleAdmin,
-		Password:  "$2a$10$VsT0saCIhLsPczQPXz4kteeTFi/pD2HiW5xHoOB/VymC6S/Yd6Bau", // "admin"
+		Password:  "$2a$10$M7LTaakjAUg8F9D02Uv5su3eggah2nA4fa.B6TDjKPq8bvilBN9W6", // bcrypt of sha256("admin") — the frontend SHA-256s the password client-side before sending
 		Active:    true,
 		CreatedAt: now,
 	}
