@@ -315,14 +315,28 @@ type ActivityLog struct {
 }
 
 type SearchDocument struct {
-	ID          string  `json:"id"`
-	DocType     string  `json:"docType"`
-	Reference   string  `json:"reference"`
-	Date        string  `json:"date"`
-	Description string  `json:"description"`
-	Amount      float64 `json:"amount"`
-	Status      string  `json:"status"`
-	Category    string  `json:"category"`
+	ID             string  `json:"id"`
+	DocType        string  `json:"docType"`
+	Reference      string  `json:"reference"`
+	Date           string  `json:"date"`
+	DueDate        string  `json:"dueDate,omitempty"`
+	Description    string  `json:"description"`
+	Detail         string  `json:"detail,omitempty"`
+	Category       string  `json:"category"`
+	Type           string  `json:"type,omitempty"` // Ingreso / Egreso (transactions)
+	Amount         float64 `json:"amount"`
+	Balance        float64 `json:"balance,omitempty"` // invoices / purchases
+	Status         string  `json:"status"`
+	Counterparty   string  `json:"counterparty,omitempty"`   // customer / provider name
+	CounterpartyID string  `json:"counterpartyId,omitempty"` // customer / provider identification
+	Source         string  `json:"source,omitempty"`
+	Prefix         string  `json:"prefix,omitempty"`
+	Number         int     `json:"number,omitempty"`
+	IsProjection   bool    `json:"isProjection,omitempty"`
+	ExternalID     string  `json:"externalId,omitempty"`
+	SyncedAt       string  `json:"syncedAt,omitempty"`
+	CreatedAt      string  `json:"createdAt,omitempty"`
+	UpdatedAt      string  `json:"updatedAt,omitempty"`
 }
 
 type LoginRequest struct {

@@ -1075,11 +1075,37 @@ func (s *Store) Search(reference string) ([]domain.SearchDocument, error) {
 		table = "transactions"
 	}
 
-	sql := fmt.Sprintf(
-		`SELECT id, COALESCE(reference,''), date::TEXT, COALESCE(description,''), amount, status, category
-		 FROM %s WHERE reference ILIKE $1 ORDER BY date DESC LIMIT 50`,
-		table,
-	)
+	// Every branch returns the same column shape so it scans into one struct.
+	// Columns a table doesn't have are filled with blanks/zeros: transactions
+	// (RC/RP) have no due date, counterparty, balance, prefix/number or
+	// synced_at; invoices/purchases have no type.
+	var sql string
+	switch table {
+	case "invoices":
+		sql = `SELECT id, COALESCE(reference,''), date::TEXT, COALESCE(due_date::TEXT,''),
+		              COALESCE(description,''), COALESCE(detail,''), category, '' AS type,
+		              amount, balance, status, COALESCE(customer_name,''),
+		              COALESCE(customer_identification,''), source, COALESCE(prefix,''),
+		              COALESCE(number,0), is_projection, external_id,
+		              synced_at::TEXT, created_at::TEXT, updated_at::TEXT
+		       FROM invoices WHERE reference ILIKE $1 ORDER BY date DESC LIMIT 50`
+	case "purchases":
+		sql = `SELECT id, COALESCE(reference,''), date::TEXT, COALESCE(due_date::TEXT,''),
+		              COALESCE(description,''), COALESCE(detail,''), category, '' AS type,
+		              amount, balance, status, COALESCE(provider_name,''),
+		              COALESCE(provider_identification,''), source, COALESCE(prefix,''),
+		              COALESCE(number,0), is_projection, external_id,
+		              synced_at::TEXT, created_at::TEXT, updated_at::TEXT
+		       FROM purchases WHERE reference ILIKE $1 ORDER BY date DESC LIMIT 50`
+	default:
+		sql = `SELECT id, COALESCE(reference,''), date::TEXT, '' AS due_date,
+		              COALESCE(description,''), COALESCE(detail,''), category, type,
+		              amount, 0::numeric AS balance, status, '' AS counterparty,
+		              '' AS counterparty_id, source, '' AS prefix,
+		              0 AS number, is_projection, COALESCE(external_id,''),
+		              '' AS synced_at, created_at::TEXT, updated_at::TEXT
+		       FROM transactions WHERE reference ILIKE $1 ORDER BY date DESC LIMIT 50`
+	}
 
 	rows, err := s.pool.Query(bg(), sql, "%"+reference+"%")
 	if err != nil {
@@ -1096,7 +1122,11 @@ func (s *Store) Search(reference string) ([]domain.SearchDocument, error) {
 	for rows.Next() {
 		var d domain.SearchDocument
 		d.DocType = docType
-		if err := rows.Scan(&d.ID, &d.Reference, &d.Date, &d.Description, &d.Amount, &d.Status, &d.Category); err != nil {
+		if err := rows.Scan(&d.ID, &d.Reference, &d.Date, &d.DueDate,
+			&d.Description, &d.Detail, &d.Category, &d.Type, &d.Amount, &d.Balance,
+			&d.Status, &d.Counterparty, &d.CounterpartyID, &d.Source, &d.Prefix,
+			&d.Number, &d.IsProjection, &d.ExternalID, &d.SyncedAt,
+			&d.CreatedAt, &d.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, d)
