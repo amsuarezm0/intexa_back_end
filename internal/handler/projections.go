@@ -82,36 +82,33 @@ func (h *ProjectionsHandler) GetSummary(w http.ResponseWriter, r *http.Request) 
 		return n, true
 	}
 
-	// Pending/partial invoices (FV) → income projections.
+	// Pending/partial invoices (FV) → income projections, one flow per unpaid
+	// installment placed on its own due date.
 	for _, inv := range invoices {
 		if inv.Status == domain.StatusCompleted || inv.Status == domain.StatusCancelled {
 			continue
 		}
-		dateStr := inv.DueDate
-		if dateStr == "" {
-			dateStr = inv.Date
+		for _, inst := range domain.PendingInstallments(inv.Total, inv.Balance, inv.Installments, firstNonEmpty(inv.DueDate, inv.Date)) {
+			daysAway, ok := parseDaysAway(inst.DueDate)
+			if !ok || daysAway > days {
+				continue
+			}
+			addFlow(domain.TypeIngreso, inst.Value, daysAway)
 		}
-		daysAway, ok := parseDaysAway(dateStr)
-		if !ok || daysAway > days {
-			continue
-		}
-		addFlow(domain.TypeIngreso, inv.Balance, daysAway)
 	}
 
-	// Pending/partial purchases (FC) → expense projections.
+	// Pending/partial purchases (FC) → expense projections, per installment.
 	for _, pur := range purchases {
 		if pur.Status == domain.StatusCompleted || pur.Status == domain.StatusCancelled {
 			continue
 		}
-		dateStr := pur.DueDate
-		if dateStr == "" {
-			dateStr = pur.Date
+		for _, inst := range domain.PendingInstallments(pur.Total, pur.Balance, pur.Installments, firstNonEmpty(pur.DueDate, pur.Date)) {
+			daysAway, ok := parseDaysAway(inst.DueDate)
+			if !ok || daysAway > days {
+				continue
+			}
+			addFlow(domain.TypeEgreso, inst.Value, daysAway)
 		}
-		daysAway, ok := parseDaysAway(dateStr)
-		if !ok || daysAway > days {
-			continue
-		}
-		addFlow(domain.TypeEgreso, pur.Balance, daysAway)
 	}
 
 	// Manual projections in transactions (is_projection=true).
@@ -163,62 +160,62 @@ func (h *ProjectionsHandler) GetSummary(w http.ResponseWriter, r *http.Request) 
 		if inv.Status == domain.StatusCompleted || inv.Status == domain.StatusCancelled {
 			continue
 		}
-		dateStr := inv.DueDate
-		if dateStr == "" {
-			dateStr = inv.Date
-		}
-		daysAway, ok := parseDaysAway(dateStr)
-		if !ok || daysAway > days {
-			continue
-		}
 		desc := inv.CustomerName
 		if desc == "" {
 			desc = inv.Category
 		}
-		entries = append(entries, entry{
-			alert: domain.ProjectionAlert{
-				ID:          inv.ID,
-				Icon:        "FileCheck",
-				Title:       inv.Detail,
-				Description: desc,
-				DueDate:     dateStr,
-				Amount:      inv.Balance,
-				Color:       "brand-success",
-			},
-			daysAway: daysAway,
-			amount:   inv.Balance,
-		})
+		ref := firstNonEmpty(inv.Reference, inv.Detail)
+		pending := domain.PendingInstallments(inv.Total, inv.Balance, inv.Installments, firstNonEmpty(inv.DueDate, inv.Date))
+		for i, inst := range pending {
+			daysAway, ok := parseDaysAway(inst.DueDate)
+			if !ok || daysAway > days {
+				continue
+			}
+			entries = append(entries, entry{
+				alert: domain.ProjectionAlert{
+					ID:          installmentAlertID(inv.ID, i, len(pending)),
+					Icon:        "FileCheck",
+					Title:       installmentTitle(ref, i, len(pending)),
+					Description: desc,
+					DueDate:     inst.DueDate,
+					Amount:      inst.Value,
+					Color:       "brand-success",
+				},
+				daysAway: daysAway,
+				amount:   inst.Value,
+			})
+		}
 	}
 
 	for _, pur := range purchases {
 		if pur.Status == domain.StatusCompleted || pur.Status == domain.StatusCancelled {
 			continue
 		}
-		dateStr := pur.DueDate
-		if dateStr == "" {
-			dateStr = pur.Date
-		}
-		daysAway, ok := parseDaysAway(dateStr)
-		if !ok || daysAway > days {
-			continue
-		}
 		desc := pur.ProviderName
 		if desc == "" {
 			desc = pur.Category
 		}
-		entries = append(entries, entry{
-			alert: domain.ProjectionAlert{
-				ID:          pur.ID,
-				Icon:        "AlertCircle",
-				Title:       pur.Detail,
-				Description: desc,
-				DueDate:     dateStr,
-				Amount:      pur.Balance,
-				Color:       "brand-danger",
-			},
-			daysAway: daysAway,
-			amount:   pur.Balance,
-		})
+		ref := firstNonEmpty(pur.Reference, pur.Detail)
+		pending := domain.PendingInstallments(pur.Total, pur.Balance, pur.Installments, firstNonEmpty(pur.DueDate, pur.Date))
+		for i, inst := range pending {
+			daysAway, ok := parseDaysAway(inst.DueDate)
+			if !ok || daysAway > days {
+				continue
+			}
+			entries = append(entries, entry{
+				alert: domain.ProjectionAlert{
+					ID:          installmentAlertID(pur.ID, i, len(pending)),
+					Icon:        "AlertCircle",
+					Title:       installmentTitle(ref, i, len(pending)),
+					Description: desc,
+					DueDate:     inst.DueDate,
+					Amount:      inst.Value,
+					Color:       "brand-danger",
+				},
+				daysAway: daysAway,
+				amount:   inst.Value,
+			})
+		}
 	}
 
 	for _, t := range all {
@@ -342,6 +339,24 @@ func (h *ProjectionsHandler) Simulate(w http.ResponseWriter, r *http.Request) {
 		Impact:           impact - penalty,
 		RiskLevel:        risk,
 	})
+}
+
+// installmentTitle labels an installment alert. The reference is kept as the
+// first " · "-separated token so ProjectionsView can look the document up.
+func installmentTitle(ref string, i, n int) string {
+	if n <= 1 {
+		return ref
+	}
+	return fmt.Sprintf("%s · cuota %d/%d", ref, i+1, n)
+}
+
+// installmentAlertID keeps one id per invoice for lump sums, but makes each
+// installment unique so the frontend list keys don't collide.
+func installmentAlertID(id string, i, n int) string {
+	if n <= 1 {
+		return id
+	}
+	return fmt.Sprintf("%s#%d", id, i+1)
 }
 
 // buildCheckpoints returns 8 evenly-spaced day indices from 0 to days (inclusive).

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -426,6 +427,7 @@ func (h *SiigoHandler) saveInvoices(invoices []siigopkg.Invoice, dateStart, date
 			Status:                 invoiceStatus(inv.Balance, inv.Total),
 			Category:               categorizeInvoice(itemDescs, inv.Customer.Name),
 			Detail:                 inv.Name + ifNonEmpty(" · ", strings.Join(itemDescs, " | ")),
+			Installments:           paymentsToInstallments(inv.Payments),
 		}
 		inserted, err := h.store.UpsertInvoice(record)
 		if err != nil {
@@ -516,6 +518,7 @@ func (h *SiigoHandler) savePurchases(purchases []siigopkg.Purchase, dateStart, d
 			Status:                 invoiceStatus(pur.Balance, pur.Total),
 			Category:               categorizePurchase(itemDescs, pur.Provider.Name),
 			Detail:                 pur.Name + ifNonEmpty(" · ", strings.Join(itemDescs, " | ")),
+			Installments:           paymentsToInstallments(pur.Payments),
 		}
 		inserted, err := h.store.UpsertPurchase(record)
 		if err != nil {
@@ -741,6 +744,21 @@ func firstPaymentDueDate(payments []siigopkg.PaymentTerm) string {
 		}
 	}
 	return ""
+}
+
+// paymentsToInstallments maps a Siigo payment schedule to domain installments,
+// keeping only dated terms. A single dated term (or none) leaves the document as
+// a lump sum on its due date.
+func paymentsToInstallments(payments []siigopkg.PaymentTerm) []domain.Installment {
+	out := make([]domain.Installment, 0, len(payments))
+	for _, p := range payments {
+		if p.DueDate == "" {
+			continue
+		}
+		out = append(out, domain.Installment{DueDate: p.DueDate, Value: p.Value})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].DueDate < out[j].DueDate })
+	return out
 }
 
 func ifNonEmpty(prefix, s string) string {

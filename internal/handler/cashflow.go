@@ -97,21 +97,17 @@ func (h *CashFlowHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 
 	var pendingInc, pendingExp float64
 	for _, inv := range invoices {
-		dateStr := inv.DueDate
-		if dateStr == "" {
-			dateStr = inv.Date
-		}
-		if d, ok := parseDate(dateStr); ok && !d.After(horizon30) {
-			pendingInc += inv.Balance
+		for _, inst := range domain.PendingInstallments(inv.Total, inv.Balance, inv.Installments, firstNonEmpty(inv.DueDate, inv.Date)) {
+			if d, ok := parseDate(inst.DueDate); ok && !d.After(horizon30) {
+				pendingInc += inst.Value
+			}
 		}
 	}
 	for _, pur := range purchases {
-		dateStr := pur.DueDate
-		if dateStr == "" {
-			dateStr = pur.Date
-		}
-		if d, ok := parseDate(dateStr); ok && !d.After(horizon30) {
-			pendingExp += pur.Balance
+		for _, inst := range domain.PendingInstallments(pur.Total, pur.Balance, pur.Installments, firstNonEmpty(pur.DueDate, pur.Date)) {
+			if d, ok := parseDate(inst.DueDate); ok && !d.After(horizon30) {
+				pendingExp += inst.Value
+			}
 		}
 	}
 	for _, t := range projections {
@@ -228,6 +224,18 @@ func (h *CashFlowHandler) GetPeriodData(w http.ResponseWriter, r *http.Request) 
 		slog.Error("cashflow: GetPeriodData", "err", err)
 		jsonError(w, "internal server error", http.StatusInternalServerError)
 		return
+	}
+	// Expose the unpaid installment schedule so the frontend chart can spread
+	// pending amounts across their due dates instead of the whole balance.
+	for _, inv := range data.Invoices {
+		if inv.Status == domain.StatusPending || inv.Status == domain.StatusPartial {
+			inv.PendingInstallments = domain.PendingInstallments(inv.Total, inv.Balance, inv.Installments, firstNonEmpty(inv.DueDate, inv.Date))
+		}
+	}
+	for _, pur := range data.Purchases {
+		if pur.Status == domain.StatusPending || pur.Status == domain.StatusPartial {
+			pur.PendingInstallments = domain.PendingInstallments(pur.Total, pur.Balance, pur.Installments, firstNonEmpty(pur.DueDate, pur.Date))
+		}
 	}
 	jsonOK(w, data)
 }

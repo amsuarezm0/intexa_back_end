@@ -753,6 +753,7 @@ const invoiceCols = `
 	COALESCE(reference,''), COALESCE(prefix,''), COALESCE(number,0), date::TEXT, COALESCE(due_date::TEXT,''),
 	COALESCE(customer_identification,''), COALESCE(customer_name,''),
 	amount, balance, status, category, COALESCE(detail,''),
+	COALESCE(installments,'[]'::jsonb),
 	synced_at, created_at, updated_at`
 
 func (s *Store) GetAllInvoices() ([]*domain.Invoice, error) {
@@ -805,19 +806,20 @@ func (s *Store) UpsertInvoice(inv *domain.Invoice) (bool, error) {
 	err := s.pool.QueryRow(bg(), `
 		INSERT INTO invoices
 		  (id, external_id, source, is_projection, reference, prefix, number, date, due_date,
-		   customer_identification, customer_name, amount, balance, status, category, detail, description, synced_at)
-		VALUES ($1,$2,$3,$4,NULLIF($5,''),$6,$7,$8,$9,NULLIF($10,''),NULLIF($11,''),$12,$13,$14,$15,$16,NULLIF($5,''),now())
+		   customer_identification, customer_name, amount, balance, status, category, detail, description, installments, synced_at)
+		VALUES ($1,$2,$3,$4,NULLIF($5,''),$6,$7,$8,$9,NULLIF($10,''),NULLIF($11,''),$12,$13,$14,$15,$16,NULLIF($5,''),$17,now())
 		ON CONFLICT (external_id) DO UPDATE
 		  SET reference=NULLIF($5,''), date=$8, due_date=$9,
 		      customer_identification=NULLIF($10,''), customer_name=NULLIF($11,''),
 		      amount=$12, balance=$13, status=$14, category=$15, detail=$16,
-		      description=NULLIF($5,''),
+		      description=NULLIF($5,''), installments=$17,
 		      synced_at=now(), updated_at=now()
 		RETURNING id, (xmax = 0) AS inserted, created_at, updated_at, synced_at`,
 		newID, inv.ExternalID, inv.Source, inv.IsProjection,
 		ref, prefix, number, parseDate(inv.Date), dueDate,
 		inv.CustomerIdentification, inv.CustomerName,
 		inv.Total, inv.Balance, string(inv.Status), inv.Category, inv.Detail,
+		installmentsJSON(inv.Installments),
 	).Scan(&actualID, &inserted, &inv.CreatedAt, &inv.UpdatedAt, &inv.SyncedAt)
 	inv.ID = actualID
 	return inserted, err
@@ -830,6 +832,7 @@ const purchaseCols = `
 	COALESCE(reference,''), COALESCE(prefix,''), COALESCE(number,0), date::TEXT, COALESCE(due_date::TEXT,''),
 	COALESCE(provider_identification,''), COALESCE(provider_name,''),
 	amount, balance, status, category, COALESCE(detail,''),
+	COALESCE(installments,'[]'::jsonb),
 	synced_at, created_at, updated_at`
 
 func (s *Store) GetAllPurchases() ([]*domain.Purchase, error) {
@@ -882,25 +885,39 @@ func (s *Store) UpsertPurchase(pur *domain.Purchase) (bool, error) {
 	err := s.pool.QueryRow(bg(), `
 		INSERT INTO purchases
 		  (id, external_id, source, is_projection, reference, prefix, number, date, due_date,
-		   provider_identification, provider_name, amount, balance, status, category, detail, description, synced_at)
-		VALUES ($1,$2,$3,$4,NULLIF($5,''),$6,$7,$8,$9,NULLIF($10,''),NULLIF($11,''),$12,$13,$14,$15,$16,NULLIF($5,''),now())
+		   provider_identification, provider_name, amount, balance, status, category, detail, description, installments, synced_at)
+		VALUES ($1,$2,$3,$4,NULLIF($5,''),$6,$7,$8,$9,NULLIF($10,''),NULLIF($11,''),$12,$13,$14,$15,$16,NULLIF($5,''),$17,now())
 		ON CONFLICT (external_id) DO UPDATE
 		  SET reference=NULLIF($5,''), date=$8, due_date=$9,
 		      provider_identification=NULLIF($10,''), provider_name=NULLIF($11,''),
 		      amount=$12, balance=$13, status=$14, category=$15, detail=$16,
-		      description=NULLIF($5,''),
+		      description=NULLIF($5,''), installments=$17,
 		      synced_at=now(), updated_at=now()
 		RETURNING id, (xmax = 0) AS inserted, created_at, updated_at, synced_at`,
 		newID, pur.ExternalID, pur.Source, pur.IsProjection,
 		ref, prefix, number, parseDate(pur.Date), dueDate,
 		pur.ProviderIdentification, pur.ProviderName,
 		pur.Total, pur.Balance, string(pur.Status), pur.Category, pur.Detail,
+		installmentsJSON(pur.Installments),
 	).Scan(&actualID, &inserted, &pur.CreatedAt, &pur.UpdatedAt, &pur.SyncedAt)
 	pur.ID = actualID
 	return inserted, err
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+// installmentsJSON marshals a schedule for a JSONB column, defaulting to an
+// empty array (passed as text so pgx casts it to jsonb).
+func installmentsJSON(items []domain.Installment) string {
+	if len(items) == 0 {
+		return "[]"
+	}
+	b, err := json.Marshal(items)
+	if err != nil {
+		return "[]"
+	}
+	return string(b)
+}
 
 type scanner interface {
 	Scan(dest ...any) error
@@ -949,17 +966,22 @@ func scanUser(row scanner) (*domain.User, error) {
 func scanInvoice(row scanner) (*domain.Invoice, error) {
 	var inv domain.Invoice
 	var status string
+	var installments []byte
 	err := row.Scan(
 		&inv.ID, &inv.ExternalID, &inv.Source, &inv.IsProjection,
 		&inv.Reference, &inv.Prefix, &inv.Number, &inv.Date, &inv.DueDate,
 		&inv.CustomerIdentification, &inv.CustomerName,
 		&inv.Total, &inv.Balance, &status, &inv.Category, &inv.Detail,
+		&installments,
 		&inv.SyncedAt, &inv.CreatedAt, &inv.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
 	}
 	inv.Status = domain.TransactionStatus(status)
+	if len(installments) > 0 {
+		_ = json.Unmarshal(installments, &inv.Installments)
+	}
 	return &inv, nil
 }
 
@@ -978,17 +1000,22 @@ func scanInvoices(rows pgx.Rows) ([]*domain.Invoice, error) {
 func scanPurchase(row scanner) (*domain.Purchase, error) {
 	var pur domain.Purchase
 	var status string
+	var installments []byte
 	err := row.Scan(
 		&pur.ID, &pur.ExternalID, &pur.Source, &pur.IsProjection,
 		&pur.Reference, &pur.Prefix, &pur.Number, &pur.Date, &pur.DueDate,
 		&pur.ProviderIdentification, &pur.ProviderName,
 		&pur.Total, &pur.Balance, &status, &pur.Category, &pur.Detail,
+		&installments,
 		&pur.SyncedAt, &pur.CreatedAt, &pur.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
 	}
 	pur.Status = domain.TransactionStatus(status)
+	if len(installments) > 0 {
+		_ = json.Unmarshal(installments, &pur.Installments)
+	}
 	return &pur, nil
 }
 
@@ -1026,7 +1053,9 @@ func (s *Store) GetPeriodData(from, to time.Time) (*domain.PeriodData, error) {
 	invRows, err := s.pool.Query(bg(), `SELECT`+invoiceCols+`
 		FROM invoices
 		WHERE status IN ('Pendiente','Parcial')
-		  AND COALESCE(due_date, date) >= $1 AND COALESCE(due_date, date) <= $2
+		  AND ((COALESCE(due_date, date) >= $1 AND COALESCE(due_date, date) <= $2)
+		    OR EXISTS (SELECT 1 FROM jsonb_array_elements(installments) e
+		               WHERE (e->>'dueDate')::date >= $1 AND (e->>'dueDate')::date <= $2))
 		ORDER BY date DESC`, from, to)
 	if err != nil {
 		return nil, err
@@ -1040,7 +1069,9 @@ func (s *Store) GetPeriodData(from, to time.Time) (*domain.PeriodData, error) {
 	purRows, err := s.pool.Query(bg(), `SELECT`+purchaseCols+`
 		FROM purchases
 		WHERE status IN ('Pendiente','Parcial')
-		  AND COALESCE(due_date, date) >= $1 AND COALESCE(due_date, date) <= $2
+		  AND ((COALESCE(due_date, date) >= $1 AND COALESCE(due_date, date) <= $2)
+		    OR EXISTS (SELECT 1 FROM jsonb_array_elements(installments) e
+		               WHERE (e->>'dueDate')::date >= $1 AND (e->>'dueDate')::date <= $2))
 		ORDER BY date DESC`, from, to)
 	if err != nil {
 		return nil, err

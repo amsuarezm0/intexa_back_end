@@ -42,6 +42,62 @@ type Transaction struct {
 	UpdatedAt    time.Time         `json:"updatedAt"`
 }
 
+// Installment is one scheduled payment of an invoice/purchase (from Siigo's
+// payments schedule). A document with a single installment (or none) behaves as
+// a lump sum on its due date.
+type Installment struct {
+	DueDate string  `json:"dueDate"`
+	Value   float64 `json:"value"`
+}
+
+// PendingInstallments returns the amounts still owed on a document, placed on
+// their due dates. The already-paid amount (total-balance) is allocated to the
+// earliest installments first; the running total of the result is capped at
+// balance. With an empty schedule it returns a single lump-sum installment on
+// fallbackDate for the full balance — preserving the pre-installment behavior.
+func PendingInstallments(total, balance float64, schedule []Installment, fallbackDate string) []Installment {
+	if balance <= 0 {
+		return nil
+	}
+	if len(schedule) == 0 {
+		return []Installment{{DueDate: fallbackDate, Value: balance}}
+	}
+	paid := total - balance
+	if paid < 0 {
+		paid = 0
+	}
+	remaining := balance
+	out := make([]Installment, 0, len(schedule))
+	for _, inst := range schedule {
+		if remaining <= 0 {
+			break
+		}
+		unpaid := inst.Value
+		if paid > 0 {
+			if paid >= unpaid {
+				paid -= unpaid
+				continue // this installment is already covered
+			}
+			unpaid -= paid
+			paid = 0
+		}
+		if unpaid > remaining {
+			unpaid = remaining
+		}
+		due := inst.DueDate
+		if due == "" {
+			due = fallbackDate
+		}
+		out = append(out, Installment{DueDate: due, Value: unpaid})
+		remaining -= unpaid
+	}
+	// Any residual (schedule summed to less than balance) lands on fallbackDate.
+	if remaining > 0.005 {
+		out = append(out, Installment{DueDate: fallbackDate, Value: remaining})
+	}
+	return out
+}
+
 type Invoice struct {
 	ID                     string            `json:"id"`
 	ExternalID             string            `json:"externalId"`
@@ -59,6 +115,8 @@ type Invoice struct {
 	Status                 TransactionStatus `json:"status"`
 	Category               string            `json:"category"`
 	Detail                 string            `json:"detail,omitempty"`
+	Installments           []Installment     `json:"installments,omitempty"`
+	PendingInstallments    []Installment     `json:"pendingInstallments,omitempty"` // computed, not persisted
 	SyncedAt               time.Time         `json:"syncedAt"`
 	CreatedAt              time.Time         `json:"createdAt"`
 	UpdatedAt              time.Time         `json:"updatedAt"`
@@ -81,6 +139,8 @@ type Purchase struct {
 	Status                 TransactionStatus `json:"status"`
 	Category               string            `json:"category"`
 	Detail                 string            `json:"detail,omitempty"`
+	Installments           []Installment     `json:"installments,omitempty"`
+	PendingInstallments    []Installment     `json:"pendingInstallments,omitempty"` // computed, not persisted
 	SyncedAt               time.Time         `json:"syncedAt"`
 	CreatedAt              time.Time         `json:"createdAt"`
 	UpdatedAt              time.Time         `json:"updatedAt"`

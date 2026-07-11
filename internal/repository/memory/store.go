@@ -123,8 +123,17 @@ func (s *Store) seed() {
 			date = now
 		}
 		extID := ""
+		reference := ""
 		if tmpl.externalID != "" {
 			extID = fmt.Sprintf(tmpl.externalID, year, month)
+			// Siigo cash movements carry an RC (Recibo de Caja, income) or
+			// RP (Recibo de Pago, expense) reference, reusing the external id's
+			// trailing sequence for uniqueness.
+			docPrefix := "RC"
+			if tmpl.txType == domain.TypeEgreso {
+				docPrefix = "RP"
+			}
+			reference = fmt.Sprintf("%s-%d%02d-%s", docPrefix, year, month, extID[strings.LastIndex(extID, "-")+1:])
 		}
 		t := &domain.Transaction{
 			ID:          uuid.NewString(),
@@ -134,6 +143,7 @@ func (s *Store) seed() {
 			Type:        tmpl.txType,
 			Amount:      tmpl.amount,
 			Status:      tmpl.status,
+			Reference:   reference,
 			Source:      tmpl.source,
 			ExternalID:  extID,
 			CreatedAt:   date,
@@ -163,6 +173,109 @@ func (s *Store) seed() {
 	for _, tmpl := range currentMonthExtras {
 		if tmpl.dayOffset <= now.Day() {
 			addTx(y, m, tmpl.dayOffset, tmpl)
+		}
+	}
+
+	// ── Siigo documents: invoices (FV) and purchases (FC) ────────────────────
+	// Receivables/payables (which can be Parcial/Pendiente), kept separate from
+	// the cash movements above and searchable by their FV-/FC- reference.
+	type docTemplate struct {
+		seq          int
+		description  string
+		category     string
+		counterparty string
+		counterID    string
+		total        float64
+		balance      float64
+		status       domain.TransactionStatus
+		installments int // 0/1 → lump sum; N → monthly schedule from due date
+	}
+	invoiceTemplates := []docTemplate{
+		{1, "Factura servicios editoriales", "Operacional - Ventas", "Corporación Alfa S.A.S.", "900123456", 15400000, 0, domain.StatusCompleted, 0},
+		{2, "Factura licenciamiento anual", "Ingresos Editoriales", "Editorial Beta Ltda.", "830987654", 8900000, 4450000, domain.StatusPartial, 0},
+		{3, "Factura consultoría trimestral (3 cuotas)", "Ingresos Directos", "Gamma Consulting", "901222333", 6200000, 6200000, domain.StatusPending, 3},
+	}
+	purchaseTemplates := []docTemplate{
+		{1, "Compra equipos de cómputo", "Gastos - Tecnología", "TechSupply S.A.", "860111222", 7300000, 0, domain.StatusCompleted, 0},
+		{2, "Servicios de nube — plan a cuotas", "Infraestructura", "CloudCo Colombia", "901555666", 4200000, 2100000, domain.StatusPartial, 3},
+		{3, "Suministros de oficina", "Gastos Operativos", "Papelería Central", "800333444", 950000, 950000, domain.StatusPending, 0},
+	}
+
+	// mkSchedule builds an N-installment monthly schedule starting at `first`,
+	// each installment total/N (remainder on the last). N<=1 → lump sum (nil).
+	mkSchedule := func(total float64, n int, first time.Time) []domain.Installment {
+		if n <= 1 {
+			return nil
+		}
+		out := make([]domain.Installment, 0, n)
+		each := total / float64(n)
+		acc := 0.0
+		for k := 0; k < n; k++ {
+			v := each
+			if k == n-1 {
+				v = total - acc
+			}
+			acc += each
+			out = append(out, domain.Installment{DueDate: first.AddDate(0, k, 0).Format("2006-01-02"), Value: v})
+		}
+		return out
+	}
+
+	for monthsBack := 2; monthsBack >= 0; monthsBack-- {
+		ref := now.AddDate(0, -monthsBack, 0)
+		yy, mm := ref.Year(), int(ref.Month())
+		issue := time.Date(yy, time.Month(mm), 5, 10, 0, 0, 0, now.Location())
+		if issue.After(now) {
+			issue = now
+		}
+		due := issue.AddDate(0, 1, 0)
+		for _, d := range invoiceTemplates {
+			inv := &domain.Invoice{
+				ID:                     uuid.NewString(),
+				ExternalID:             fmt.Sprintf("siigo-fv-%d%02d-%02d", yy, mm, d.seq),
+				Source:                 string(domain.SourceSIIGO),
+				Reference:              fmt.Sprintf("FV-%d%02d-%02d", yy, mm, d.seq),
+				Prefix:                 "FV",
+				Number:                 d.seq,
+				Date:                   issue.Format("2006-01-02"),
+				DueDate:                due.Format("2006-01-02"),
+				CustomerIdentification: d.counterID,
+				CustomerName:           d.counterparty,
+				Total:                  d.total,
+				Balance:                d.balance,
+				Status:                 d.status,
+				Category:               d.category,
+				Detail:                 d.description,
+				Installments:           mkSchedule(d.total, d.installments, due),
+				SyncedAt:               issue,
+				CreatedAt:              issue,
+				UpdatedAt:              issue,
+			}
+			s.invoices[inv.ID] = inv
+		}
+		for _, d := range purchaseTemplates {
+			pur := &domain.Purchase{
+				ID:                     uuid.NewString(),
+				ExternalID:             fmt.Sprintf("siigo-fc-%d%02d-%02d", yy, mm, d.seq),
+				Source:                 string(domain.SourceSIIGO),
+				Reference:              fmt.Sprintf("FC-%d%02d-%02d", yy, mm, d.seq),
+				Prefix:                 "FC",
+				Number:                 d.seq,
+				Date:                   issue.Format("2006-01-02"),
+				DueDate:                due.Format("2006-01-02"),
+				ProviderIdentification: d.counterID,
+				ProviderName:           d.counterparty,
+				Total:                  d.total,
+				Balance:                d.balance,
+				Status:                 d.status,
+				Category:               d.category,
+				Detail:                 d.description,
+				Installments:           mkSchedule(d.total, d.installments, due),
+				SyncedAt:               issue,
+				CreatedAt:              issue,
+				UpdatedAt:              issue,
+			}
+			s.purchases[pur.ID] = pur
 		}
 	}
 }
@@ -890,14 +1003,185 @@ func (s *Store) UpsertPurchase(pur *domain.Purchase) (bool, error) {
 	return true, nil
 }
 
-func (s *Store) GetPeriodData(_, _ time.Time) (*domain.PeriodData, error) {
-	return &domain.PeriodData{
-		Transactions: []*domain.Transaction{},
-		Invoices:     []*domain.Invoice{},
-		Purchases:    []*domain.Purchase{},
-	}, nil
+func (s *Store) GetPeriodData(from, to time.Time) (*domain.PeriodData, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	fromStr := from.Format("2006-01-02")
+	toStr := to.Format("2006-01-02")
+	inRange := func(d string) bool { return d != "" && d >= fromStr && d <= toStr }
+
+	txs := make([]*domain.Transaction, 0)
+	for _, t := range s.transactions {
+		if inRange(t.Date) {
+			cp := *t
+			txs = append(txs, &cp)
+		}
+	}
+
+	// A pending doc belongs to the period if its due date or any installment
+	// falls within it.
+	invs := make([]*domain.Invoice, 0)
+	for _, inv := range s.invoices {
+		if inv.Status != domain.StatusPending && inv.Status != domain.StatusPartial {
+			continue
+		}
+		hit := inRange(firstNonEmpty(inv.DueDate, inv.Date))
+		for _, ins := range inv.Installments {
+			if inRange(ins.DueDate) {
+				hit = true
+				break
+			}
+		}
+		if hit {
+			cp := *inv
+			invs = append(invs, &cp)
+		}
+	}
+
+	purs := make([]*domain.Purchase, 0)
+	for _, pur := range s.purchases {
+		if pur.Status != domain.StatusPending && pur.Status != domain.StatusPartial {
+			continue
+		}
+		hit := inRange(firstNonEmpty(pur.DueDate, pur.Date))
+		for _, ins := range pur.Installments {
+			if inRange(ins.DueDate) {
+				hit = true
+				break
+			}
+		}
+		if hit {
+			cp := *pur
+			purs = append(purs, &cp)
+		}
+	}
+
+	return &domain.PeriodData{Transactions: txs, Invoices: invs, Purchases: purs}, nil
 }
 
-func (s *Store) Search(_ string) ([]domain.SearchDocument, error) {
-	return []domain.SearchDocument{}, nil
+func firstNonEmpty(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
+}
+
+func (s *Store) Search(reference string) ([]domain.SearchDocument, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	q := strings.ToLower(strings.TrimSpace(reference))
+	if q == "" {
+		return []domain.SearchDocument{}, nil
+	}
+	prefix := strings.ToUpper(q)
+	if len(prefix) >= 2 {
+		prefix = prefix[:2]
+	}
+
+	out := make([]domain.SearchDocument, 0)
+	switch prefix {
+	case "FV":
+		for _, inv := range s.invoices {
+			if strings.Contains(strings.ToLower(inv.Reference), q) {
+				out = append(out, invoiceDoc(inv))
+			}
+		}
+	case "FC":
+		for _, pur := range s.purchases {
+			if strings.Contains(strings.ToLower(pur.Reference), q) {
+				out = append(out, purchaseDoc(pur))
+			}
+		}
+	default:
+		// RC/RP live in transactions; anything else falls back to a plain match.
+		docType := prefix
+		if prefix != "RC" && prefix != "RP" {
+			docType = "TX"
+		}
+		for _, t := range s.transactions {
+			if strings.Contains(strings.ToLower(t.Reference), q) {
+				out = append(out, transactionDoc(t, docType))
+			}
+		}
+	}
+
+	sort.Slice(out, func(i, j int) bool { return out[i].Date > out[j].Date })
+	if len(out) > 50 {
+		out = out[:50]
+	}
+	return out, nil
+}
+
+const tsLayout = "2006-01-02 15:04:05"
+
+func transactionDoc(t *domain.Transaction, docType string) domain.SearchDocument {
+	return domain.SearchDocument{
+		ID:           t.ID,
+		DocType:      docType,
+		Reference:    t.Reference,
+		Date:         t.Date,
+		Description:  t.Description,
+		Detail:       t.Detail,
+		Category:     t.Category,
+		Type:         string(t.Type),
+		Amount:       t.Amount,
+		Status:       string(t.Status),
+		Source:       string(t.Source),
+		ExternalID:   t.ExternalID,
+		IsProjection: t.IsProjection,
+		CreatedAt:    t.CreatedAt.Format(tsLayout),
+		UpdatedAt:    t.UpdatedAt.Format(tsLayout),
+	}
+}
+
+func invoiceDoc(inv *domain.Invoice) domain.SearchDocument {
+	return domain.SearchDocument{
+		ID:             inv.ID,
+		DocType:        "FV",
+		Reference:      inv.Reference,
+		Date:           inv.Date,
+		DueDate:        inv.DueDate,
+		Description:    inv.Detail,
+		Category:       inv.Category,
+		Amount:         inv.Total,
+		Balance:        inv.Balance,
+		Status:         string(inv.Status),
+		Counterparty:   inv.CustomerName,
+		CounterpartyID: inv.CustomerIdentification,
+		Source:         inv.Source,
+		Prefix:         inv.Prefix,
+		Number:         inv.Number,
+		IsProjection:   inv.IsProjection,
+		ExternalID:     inv.ExternalID,
+		SyncedAt:       inv.SyncedAt.Format(tsLayout),
+		CreatedAt:      inv.CreatedAt.Format(tsLayout),
+		UpdatedAt:      inv.UpdatedAt.Format(tsLayout),
+	}
+}
+
+func purchaseDoc(pur *domain.Purchase) domain.SearchDocument {
+	return domain.SearchDocument{
+		ID:             pur.ID,
+		DocType:        "FC",
+		Reference:      pur.Reference,
+		Date:           pur.Date,
+		DueDate:        pur.DueDate,
+		Description:    pur.Detail,
+		Category:       pur.Category,
+		Amount:         pur.Total,
+		Balance:        pur.Balance,
+		Status:         string(pur.Status),
+		Counterparty:   pur.ProviderName,
+		CounterpartyID: pur.ProviderIdentification,
+		Source:         pur.Source,
+		Prefix:         pur.Prefix,
+		Number:         pur.Number,
+		IsProjection:   pur.IsProjection,
+		ExternalID:     pur.ExternalID,
+		SyncedAt:       pur.SyncedAt.Format(tsLayout),
+		CreatedAt:      pur.CreatedAt.Format(tsLayout),
+		UpdatedAt:      pur.UpdatedAt.Format(tsLayout),
+	}
 }
