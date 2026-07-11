@@ -19,9 +19,10 @@ const (
 	SourceSIIGO  TransactionSource = "Siigo"
 	SourceManual TransactionSource = "Manual"
 
-	RoleAdmin    UserRole = "ADMINISTRADOR"
-	RoleTreasury UserRole = "TESORERÍA"
-	RoleReadOnly UserRole = "CONSULTA"
+	RoleAdmin      UserRole = "ADMINISTRADOR"
+	RoleTreasury   UserRole = "TESORERÍA"
+	RoleManagement UserRole = "GESTIÓN"
+	RoleReadOnly   UserRole = "CONSULTA"
 )
 
 type Transaction struct {

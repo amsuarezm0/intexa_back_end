@@ -113,7 +113,8 @@ GET /health
 | Role | Access |
 |---|---|
 | `ADMINISTRADOR` | Full access including user management and domain whitelist |
-| `TESORERÍA` | Create, edit, and delete manual transactions |
+| `TESORERÍA` | Create, edit, and delete manual transactions (movements) and run Siigo sync |
+| `GESTIÓN` | Create projections only |
 | `CONSULTA` | Read-only access |
 
 ## Transaction Sources

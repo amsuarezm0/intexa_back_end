@@ -137,7 +137,7 @@ func main() {
 			r.Get("/categories", settings.GetCategories)
 			r.Get("/siigo/status", siigoH.Status)
 
-			// Write — ADMINISTRADOR + TESORERÍA
+			// Movements & Siigo sync — ADMINISTRADOR + TESORERÍA
 			r.Group(func(r chi.Router) {
 				r.Use(middleware.RequireRole("ADMINISTRADOR", "TESORERÍA"))
 
@@ -145,8 +145,14 @@ func main() {
 				r.Post("/transactions", transactions.Create)
 				r.Put("/transactions/{id}", transactions.Update)
 				r.Delete("/transactions/{id}", transactions.Delete)
-				r.Post("/projections", projections.Create)
 				r.Post("/siigo/sync", siigoH.Sync)
+			})
+
+			// Projections — ADMINISTRADOR + GESTIÓN
+			r.Group(func(r chi.Router) {
+				r.Use(middleware.RequireRole("ADMINISTRADOR", "GESTIÓN"))
+
+				r.Post("/projections", projections.Create)
 			})
 
 			// Admin only — ADMINISTRADOR
