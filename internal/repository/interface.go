@@ -29,6 +29,11 @@ type Store interface {
 	GetCategoryTotals(from, to time.Time, txType domain.TransactionType) ([]domain.CategoryTotal, error)
 	GetWeeklyTotals(year int, month time.Month) ([]domain.WeeklyComparison, error)
 
+	// ── Projection periods (custom horizons) ─────────────────────────────────
+	GetProjectionPeriods() ([]domain.ProjectionPeriod, error)
+	CreateProjectionPeriod(p *domain.ProjectionPeriod) error
+	DeleteProjectionPeriod(id string) (bool, error)
+
 	// ── Users ────────────────────────────────────────────────────────────────
 	GetUserByEmail(email string) (*domain.User, bool, error)
 	GetUserByMicrosoftOID(oid string) (*domain.User, bool, error)

@@ -35,6 +35,7 @@ type Store struct {
 	budgets      map[budgetKey]float64
 	siigoConfig  *domain.SiigoConfig
 	bankBalance  *domain.BankBalance
+	projPeriods  []domain.ProjectionPeriod
 }
 
 func New() *Store {
@@ -314,6 +315,41 @@ func (s *Store) CreateTransaction(t *domain.Transaction) error {
 	s.transactions[t.ID] = &cp
 	s.mu.Unlock()
 	return nil
+}
+
+func (s *Store) GetProjectionPeriods() ([]domain.ProjectionPeriod, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]domain.ProjectionPeriod, len(s.projPeriods))
+	copy(out, s.projPeriods)
+	sort.Slice(out, func(i, j int) bool { return out[i].Days < out[j].Days })
+	return out, nil
+}
+
+func (s *Store) CreateProjectionPeriod(p *domain.ProjectionPeriod) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, existing := range s.projPeriods {
+		if existing.Days == p.Days {
+			return fmt.Errorf("projection period with %d days already exists", p.Days)
+		}
+	}
+	p.ID = uuid.NewString()
+	p.CreatedAt = time.Now()
+	s.projPeriods = append(s.projPeriods, *p)
+	return nil
+}
+
+func (s *Store) DeleteProjectionPeriod(id string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, p := range s.projPeriods {
+		if p.ID == id {
+			s.projPeriods = append(s.projPeriods[:i], s.projPeriods[i+1:]...)
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (s *Store) NextManualReference(prefix string) (string, error) {

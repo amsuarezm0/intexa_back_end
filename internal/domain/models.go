@@ -271,6 +271,16 @@ type ProjectionSummary struct {
 	Alerts            []ProjectionAlert `json:"alerts"`
 }
 
+// ProjectionPeriod is a custom projection horizon (in days) managed by
+// ADMINISTRADOR/GESTIÓN and shared by all users. The built-in 30/60/90 day
+// periods are not persisted — only extra ones a manager adds.
+type ProjectionPeriod struct {
+	ID        string    `json:"id"`
+	Days      int       `json:"days"`
+	Label     string    `json:"label"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
 type ReportDataPoint struct {
 	Name     string  `json:"name"`
 	Ingresos float64 `json:"ingresos"`

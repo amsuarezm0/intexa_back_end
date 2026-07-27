@@ -638,6 +638,39 @@ func (s *Store) SetBudgets(budgets []domain.BudgetLine) error {
 
 // ── Siigo config ──────────────────────────────────────────────────────────────
 
+// ── Projection periods ────────────────────────────────────────────────────────
+
+func (s *Store) GetProjectionPeriods() ([]domain.ProjectionPeriod, error) {
+	rows, err := s.pool.Query(bg(),
+		`SELECT id, days, label, created_at FROM projection_periods ORDER BY days`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	periods := make([]domain.ProjectionPeriod, 0)
+	for rows.Next() {
+		var p domain.ProjectionPeriod
+		if err := rows.Scan(&p.ID, &p.Days, &p.Label, &p.CreatedAt); err != nil {
+			return nil, err
+		}
+		periods = append(periods, p)
+	}
+	return periods, rows.Err()
+}
+
+func (s *Store) CreateProjectionPeriod(p *domain.ProjectionPeriod) error {
+	p.ID = uuid.NewString()
+	return s.pool.QueryRow(bg(),
+		`INSERT INTO projection_periods (id, days, label) VALUES ($1, $2, $3)
+		 RETURNING created_at`,
+		p.ID, p.Days, p.Label).Scan(&p.CreatedAt)
+}
+
+func (s *Store) DeleteProjectionPeriod(id string) (bool, error) {
+	tag, err := s.pool.Exec(bg(), `DELETE FROM projection_periods WHERE id=$1`, id)
+	return tag.RowsAffected() > 0, err
+}
+
 func (s *Store) GetSiigoConfig() (*domain.SiigoConfig, error) {
 	var cfg domain.SiigoConfig
 	var tokenExp *time.Time

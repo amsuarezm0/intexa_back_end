@@ -6,11 +6,18 @@ import (
 	"math"
 	"net/http"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/intexa/arca-api/internal/domain"
 	"github.com/intexa/arca-api/internal/repository"
 )
+
+// reservedPeriods are the built-in horizons the frontend always shows; they are
+// not stored and cannot be added as custom periods.
+var reservedPeriods = map[int]bool{30: true, 60: true, 90: true}
 
 type ProjectionsHandler struct {
 	store repository.Store
@@ -21,12 +28,13 @@ func NewProjectionsHandler(store repository.Store) *ProjectionsHandler {
 }
 
 func (h *ProjectionsHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
+	// Any positive horizon is supported; the engine below is fully generic in
+	// `days`. Built-in periods are 30/60/90; managers may add custom ones.
 	days := 30
-	switch r.URL.Query().Get("days") {
-	case "60":
-		days = 60
-	case "90":
-		days = 90
+	if v := r.URL.Query().Get("days"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 1 && n <= 3650 {
+			days = n
+		}
 	}
 
 	now := time.Now().Truncate(24 * time.Hour)
@@ -279,6 +287,77 @@ func (h *ProjectionsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		Module: "Proyecciones", Color: "bg-purple-500",
 	})
 	jsonCreated(w, t)
+}
+
+// ── Custom projection periods ─────────────────────────────────────────────────
+
+func (h *ProjectionsHandler) ListPeriods(w http.ResponseWriter, r *http.Request) {
+	periods, err := h.store.GetProjectionPeriods()
+	if err != nil {
+		slog.Error("projections/ListPeriods", "err", err)
+		jsonError(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	jsonOK(w, periods)
+}
+
+func (h *ProjectionsHandler) CreatePeriod(w http.ResponseWriter, r *http.Request) {
+	var p domain.ProjectionPeriod
+	if err := decode(r, &p); err != nil {
+		jsonError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if p.Days < 1 || p.Days > 3650 {
+		jsonError(w, "los días deben estar entre 1 y 3650", http.StatusBadRequest)
+		return
+	}
+	if reservedPeriods[p.Days] {
+		jsonError(w, fmt.Sprintf("%d días ya es un período predeterminado", p.Days), http.StatusConflict)
+		return
+	}
+	existing, err := h.store.GetProjectionPeriods()
+	if err != nil {
+		jsonError(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	for _, e := range existing {
+		if e.Days == p.Days {
+			jsonError(w, fmt.Sprintf("ya existe un período de %d días", p.Days), http.StatusConflict)
+			return
+		}
+	}
+	p.Label = strings.TrimSpace(p.Label)
+	if err := h.store.CreateProjectionPeriod(&p); err != nil {
+		slog.Error("projections/CreatePeriod", "err", err)
+		jsonError(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	actor, initial := actorFrom(r)
+	h.store.AddActivityLog(domain.ActivityLog{ //nolint
+		UserName: actor, Initial: initial, Action: "Creó período de proyección",
+		Module: "Proyecciones", Color: "bg-purple-500",
+	})
+	jsonCreated(w, p)
+}
+
+func (h *ProjectionsHandler) DeletePeriod(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	ok, err := h.store.DeleteProjectionPeriod(id)
+	if err != nil {
+		slog.Error("projections/DeletePeriod", "err", err)
+		jsonError(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	if !ok {
+		jsonError(w, "período no encontrado", http.StatusNotFound)
+		return
+	}
+	actor, initial := actorFrom(r)
+	h.store.AddActivityLog(domain.ActivityLog{ //nolint
+		UserName: actor, Initial: initial, Action: "Eliminó período de proyección",
+		Module: "Proyecciones", Color: "bg-purple-500",
+	})
+	jsonOK(w, map[string]string{"message": "deleted"})
 }
 
 func (h *ProjectionsHandler) Simulate(w http.ResponseWriter, r *http.Request) {

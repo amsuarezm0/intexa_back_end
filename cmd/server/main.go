@@ -123,6 +123,7 @@ func main() {
 			r.Get("/cashflow", cashflow.GetSummary)
 			r.Get("/cashflow/period", cashflow.GetPeriodData)
 			r.Get("/projections", projections.GetSummary)
+			r.Get("/projections/periods", projections.ListPeriods)
 			r.Post("/projections/simulate", projections.Simulate)
 			r.Get("/reports", reports.GetSummary)
 			r.Get("/reports/export", reports.Export)
@@ -153,6 +154,8 @@ func main() {
 				r.Use(middleware.RequireRole("ADMINISTRADOR", "GESTIÓN"))
 
 				r.Post("/projections", projections.Create)
+				r.Post("/projections/periods", projections.CreatePeriod)
+				r.Delete("/projections/periods/{id}", projections.DeletePeriod)
 			})
 
 			// Admin only — ADMINISTRADOR
