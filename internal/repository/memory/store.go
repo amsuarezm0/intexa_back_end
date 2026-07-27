@@ -316,6 +316,19 @@ func (s *Store) CreateTransaction(t *domain.Transaction) error {
 	return nil
 }
 
+func (s *Store) NextManualReference(prefix string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	max := 0
+	for _, t := range s.transactions {
+		var n int
+		if _, err := fmt.Sscanf(t.Reference, prefix+"-%d", &n); err == nil && n > max {
+			max = n
+		}
+	}
+	return fmt.Sprintf("%s-%06d", prefix, max+1), nil
+}
+
 func (s *Store) ImportTransaction(t *domain.Transaction) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

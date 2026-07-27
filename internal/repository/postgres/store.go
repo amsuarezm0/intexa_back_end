@@ -4,6 +4,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -69,6 +70,26 @@ func (s *Store) CreateTransaction(t *domain.Transaction) error {
 		t.Amount, string(t.Status), t.Reference, t.Detail, string(t.Source),
 		t.ExternalID, t.IsProjection,
 	).Scan(&t.CreatedAt, &t.UpdatedAt)
+}
+
+// NextManualReference returns the next sequential reference for a manual
+// record with the given prefix (e.g. "MM" / "PM"). References are zero-padded
+// to 6 digits, so the lexically largest existing one is also the numerically
+// largest (up to 999999).
+func (s *Store) NextManualReference(prefix string) (string, error) {
+	var last string
+	err := s.pool.QueryRow(bg(),
+		`SELECT reference FROM transactions
+		 WHERE reference LIKE $1 ORDER BY reference DESC LIMIT 1`,
+		prefix+"-%").Scan(&last)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return "", err
+	}
+	n := 0
+	if last != "" {
+		fmt.Sscanf(last, prefix+"-%d", &n)
+	}
+	return fmt.Sprintf("%s-%06d", prefix, n+1), nil
 }
 
 // ImportTransaction upserts a Siigo transaction (RC/RP) by external_id.

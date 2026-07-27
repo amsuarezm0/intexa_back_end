@@ -54,7 +54,8 @@ func (h *TransactionsHandler) List(w http.ResponseWriter, r *http.Request) {
 	filtered := make([]domain.Transaction, 0)
 	for _, t := range all {
 		if search != "" && !strings.Contains(strings.ToLower(t.Description), search) &&
-			!strings.Contains(strings.ToLower(t.Category), search) {
+			!strings.Contains(strings.ToLower(t.Category), search) &&
+			!strings.Contains(strings.ToLower(t.Reference), search) {
 			continue
 		}
 		if typeFilter != "" && string(t.Type) != typeFilter {
@@ -120,6 +121,20 @@ func (h *TransactionsHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if err := decode(r, &t); err != nil {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
 		return
+	}
+	// Assign a searchable identifier to manual records: MM- for movements,
+	// PM- for projections. Siigo records already carry their own reference.
+	if t.Source == domain.SourceManual && t.Reference == "" {
+		prefix := "MM"
+		if t.IsProjection {
+			prefix = "PM"
+		}
+		ref, err := h.store.NextManualReference(prefix)
+		if err != nil {
+			jsonError(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		t.Reference = ref
 	}
 	if err := h.store.CreateTransaction(&t); err != nil {
 		jsonError(w, "internal server error", http.StatusInternalServerError)

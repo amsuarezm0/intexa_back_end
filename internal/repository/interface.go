@@ -12,6 +12,10 @@ type Store interface {
 	GetAllTransactions() ([]*domain.Transaction, error)
 	GetTransactionByID(id string) (*domain.Transaction, bool, error)
 	CreateTransaction(t *domain.Transaction) error
+	// NextManualReference returns the next sequential reference for a manual
+	// record, e.g. "MM-000123" for movements ("MM") or "PM-000045" for
+	// projections ("PM").
+	NextManualReference(prefix string) (string, error)
 	ImportTransaction(t *domain.Transaction) (bool, error)
 	UpdateTransaction(t *domain.Transaction) (bool, error)
 	DeleteTransaction(id string) (bool, error)
