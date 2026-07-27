@@ -19,6 +19,10 @@ import (
 // not stored and cannot be added as custom periods.
 var reservedPeriods = map[int]bool{30: true, 60: true, 90: true}
 
+// maxHorizonDays bounds both custom periods and how far out a projection may be
+// dated (~10 years).
+const maxHorizonDays = 3650
+
 type ProjectionsHandler struct {
 	store repository.Store
 }
@@ -32,7 +36,7 @@ func (h *ProjectionsHandler) GetSummary(w http.ResponseWriter, r *http.Request) 
 	// `days`. Built-in periods are 30/60/90; managers may add custom ones.
 	days := 30
 	if v := r.URL.Query().Get("days"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 1 && n <= 3650 {
+		if n, err := strconv.Atoi(v); err == nil && n >= 1 && n <= maxHorizonDays {
 			days = n
 		}
 	}
@@ -279,8 +283,32 @@ func (h *ProjectionsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
+
+	// The expected date must be today or later and within the same horizon
+	// range custom periods allow (see CreatePeriod), so every projection is
+	// reachable by at least one period card.
+	date, err := time.Parse("2006-01-02", t.Date)
+	if err != nil {
+		jsonError(w, "la fecha esperada es inválida", http.StatusBadRequest)
+		return
+	}
+	today := time.Now().Truncate(24 * time.Hour)
+	daysAway := int(math.Round(date.Sub(today).Hours() / 24))
+	if daysAway < 0 {
+		jsonError(w, "la fecha esperada no puede estar en el pasado", http.StatusBadRequest)
+		return
+	}
+	if daysAway > maxHorizonDays {
+		jsonError(w, fmt.Sprintf("la fecha esperada debe estar dentro de los próximos %d días", maxHorizonDays), http.StatusBadRequest)
+		return
+	}
+
 	t.IsProjection = true
-	h.store.CreateTransaction(&t)
+	if err := h.store.CreateTransaction(&t); err != nil {
+		slog.Error("projections/Create: CreateTransaction", "err", err)
+		jsonError(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
 	actor, initial := actorFrom(r)
 	h.store.AddActivityLog(domain.ActivityLog{ //nolint
 		UserName: actor, Initial: initial, Action: "Creó proyección",
@@ -307,8 +335,8 @@ func (h *ProjectionsHandler) CreatePeriod(w http.ResponseWriter, r *http.Request
 		jsonError(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-	if p.Days < 1 || p.Days > 3650 {
-		jsonError(w, "los días deben estar entre 1 y 3650", http.StatusBadRequest)
+	if p.Days < 1 || p.Days > maxHorizonDays {
+		jsonError(w, fmt.Sprintf("los días deben estar entre 1 y %d", maxHorizonDays), http.StatusBadRequest)
 		return
 	}
 	if reservedPeriods[p.Days] {
