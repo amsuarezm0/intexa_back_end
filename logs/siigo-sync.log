@@ -62,3 +62,4 @@
 2026-08-24T06:32:24-0500 | 200 OK | POST /api/v1/siigo/sync/cron | mode=incremental invoices=0 purchases=0 vouchers=0 receipts=0 updated=545
 2026-08-25T06:31:49-0500 | 200 OK | POST /api/v1/siigo/sync/cron | mode=incremental invoices=0 purchases=27 vouchers=0 receipts=0 updated=539
 2026-08-26T06:33:24-0500 | 200 OK | POST /api/v1/siigo/sync/cron | mode=incremental invoices=0 purchases=2 vouchers=1 receipts=0 updated=592
+2026-08-27T15:56:05-0500 | 200 OK | POST /api/v1/siigo/sync/cron | mode=incremental invoices=1 purchases=12 vouchers=1 receipts=3 updated=588
