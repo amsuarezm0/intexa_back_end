@@ -596,12 +596,14 @@ func (h *SiigoHandler) saveVouchers(vouchers []siigopkg.Voucher, dateStart, date
 			}
 		}
 		t := &domain.Transaction{
-			Date:         v.Date,
-			Description:  v.Name,
-			Reference:    v.Name,
-			Category:     categorizeInvoice(itemDescs, v.Customer.Name),
+			Date:        v.Date,
+			Description: v.Name,
+			Reference:   v.Name,
+			// The RC payload has no customer name, so categorisation rests on the
+			// item descriptions alone — and only adjustment lines carry one.
+			Category:     categorizeInvoice(itemDescs, ""),
 			Type:         domain.TypeIngreso,
-			Amount:       voucherTotal(v.Total, v.Items, "Debit"),
+			Amount:       voucherTotal(v),
 			Status:       domain.StatusCompleted,
 			Detail:       v.Name + ifNonEmpty(" · ", strings.Join(itemDescs, " | ")),
 			Source:       domain.SourceSIIGO,
@@ -689,7 +691,7 @@ func (h *SiigoHandler) savePaymentReceipts(receipts []siigopkg.PaymentReceipt, d
 			Reference:    pr.Name,
 			Category:     categorizePurchase(itemDescs, pr.Provider.Name),
 			Type:         domain.TypeEgreso,
-			Amount:       voucherTotal(pr.Total, pr.Items, "Credit"),
+			Amount:       paymentReceiptTotal(pr.Total, pr.Items),
 			Status:       domain.StatusCompleted,
 			Detail:       pr.Name + ifNonEmpty(" · ", strings.Join(itemDescs, " | ")),
 			Source:       domain.SourceSIIGO,
@@ -722,12 +724,28 @@ func firstNonEmpty(vals ...string) string {
 	return ""
 }
 
-// voucherTotal sums items whose account.movement matches the given side.
-// Falls back to the top-level total only when no items match.
-func voucherTotal(total float64, items []siigopkg.VoucherItem, movement string) float64 {
+// voucherTotal is the cash actually received on an RC. payment.value is the
+// authoritative figure; summing the items is only a fallback for payloads that
+// omit it, and is approximate because it adds Credit adjustment lines rather
+// than subtracting them.
+func voucherTotal(v siigopkg.Voucher) float64 {
+	if v.Payment.Value != 0 {
+		return v.Payment.Value
+	}
+	var sum float64
+	for _, it := range v.Items {
+		sum += it.Value
+	}
+	return sum
+}
+
+// paymentReceiptTotal sums RP items whose account.movement is Credit, falling
+// back to the top-level total when none match. This is the original
+// voucherTotal logic, kept as-is pending a verified RP payload.
+func paymentReceiptTotal(total float64, items []siigopkg.PaymentReceiptItem) float64 {
 	var sum float64
 	for _, it := range items {
-		if it.Account.Movement == movement {
+		if it.Account.Movement == "Credit" {
 			sum += it.Value
 		}
 	}

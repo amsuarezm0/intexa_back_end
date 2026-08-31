@@ -155,30 +155,54 @@ type VoucherListResponse struct {
 	Results    []Voucher  `json:"results"`
 }
 
+// The RC payload carries no `total` and no `prefix`; the document total is
+// `payment.value` and the prefix is embedded in `name` ("RC-1-257").
 type Voucher struct {
-	ID           string          `json:"id"`
-	Prefix       string          `json:"prefix"`
-	Number       int             `json:"number"`
-	Name         string          `json:"name"`
-	Date         string          `json:"date"` // YYYY-MM-DD
-	Customer     VoucherCustomer `json:"customer"`
-	Total        float64         `json:"total"`
-	Observations string          `json:"observations"`
-	Items        []VoucherItem   `json:"items"`
+	ID       string          `json:"id"`
+	Document DocumentRef     `json:"document"`
+	Number   int             `json:"number"`
+	Name     string          `json:"name"`
+	Date     string          `json:"date"` // YYYY-MM-DD
+	Type     string          `json:"type"` // e.g. "DebtPayment"
+	Customer VoucherCustomer `json:"customer"`
+	Items    []VoucherItem   `json:"items"`
+	Payment  VoucherPayment  `json:"payment"`
 }
 
 type VoucherCustomer struct {
+	ID             string `json:"id"`
 	Identification string `json:"identification"`
-	Name           string `json:"name"`
+	BranchOffice   int    `json:"branch_office"`
 }
 
+// VoucherPayment is how the money arrived. Name is the account it landed in
+// (e.g. "Trasnferencia Davivienda 1037") and Value is the document total.
+type VoucherPayment struct {
+	ID    int     `json:"id"`
+	Name  string  `json:"name"`
+	Value float64 `json:"value"`
+}
+
+// VoucherItem is one of two shapes: a `due` line applying the receipt to an
+// invoice, or an `account` line for adjustments ("Ajuste al peso"). Exactly one
+// of Due/Account is populated, so both are pointers.
 type VoucherItem struct {
-	Description string         `json:"description"`
-	Value       float64        `json:"value"`
-	Account     VoucherAccount `json:"account"`
+	Due         *VoucherDue     `json:"due,omitempty"`
+	Account     *VoucherAccount `json:"account,omitempty"`
+	Description string          `json:"description"`
+	Value       float64         `json:"value"`
+}
+
+// VoucherDue identifies the invoice instalment this line settles.
+type VoucherDue struct {
+	Prefix      string `json:"prefix"`      // "FV-1"
+	Consecutive int    `json:"consecutive"` // 728
+	Quote       int    `json:"quote"`
+	Date        string `json:"date"`
 }
 
 type VoucherAccount struct {
+	Code     string `json:"code"`
 	Movement string `json:"movement"` // "Debit" | "Credit"
 }
 
@@ -198,7 +222,16 @@ type PaymentReceipt struct {
 	Provider     PaymentReceiptProvider `json:"provider"`
 	Total        float64                `json:"total"`
 	Observations string                 `json:"observations"`
-	Items        []VoucherItem          `json:"items"`
+	Items        []PaymentReceiptItem   `json:"items"`
+}
+
+// PaymentReceiptItem keeps the pre-existing shape: unlike the RC payload, the
+// RP one has not been verified against a live response, so its handling is left
+// untouched rather than assumed to mirror Voucher.
+type PaymentReceiptItem struct {
+	Description string         `json:"description"`
+	Value       float64        `json:"value"`
+	Account     VoucherAccount `json:"account"`
 }
 
 type PaymentReceiptProvider struct {
