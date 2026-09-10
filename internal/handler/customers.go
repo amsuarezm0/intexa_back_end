@@ -184,6 +184,7 @@ func (h *CustomersHandler) Get(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	attachDueDatesToInvoices(invoices)
 	jsonOK(w, map[string]any{
 		"customer": c,
 		"invoices": invoices,

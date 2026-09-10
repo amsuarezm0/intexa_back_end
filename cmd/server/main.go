@@ -66,6 +66,7 @@ func main() {
 	settings := handler.NewSettingsHandler(store)
 	siigoH := handler.NewSiigoHandler(store)
 	customers := handler.NewCustomersHandler(store)
+	documents := handler.NewDocumentsHandler(store)
 	domains := handler.NewDomainsHandler(store)
 	exchangeRates := handler.NewExchangeRateHandler()
 	notifications := handler.NewNotificationsHandler(store)
@@ -155,6 +156,10 @@ func main() {
 				r.Post("/siigo/sync", siigoH.Sync)
 				// Refreshes only the Clientes module, from that view.
 				r.Post("/siigo/sync/customers", siigoH.SyncCustomers)
+				// The one manual edit allowed on a Siigo document: when it will
+				// actually be paid. Everything else there stays read-only.
+				r.Put("/invoices/{id}/secondary-due-date", documents.SetInvoiceSecondaryDueDate)
+				r.Put("/purchases/{id}/secondary-due-date", documents.SetPurchaseSecondaryDueDate)
 			})
 
 			// Categories — every role that writes data, i.e. all but CONSULTA

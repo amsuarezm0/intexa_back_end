@@ -41,6 +41,13 @@ type Transaction struct {
 	Source       TransactionSource `json:"source"`
 	ExternalID   string            `json:"externalId,omitempty"`
 	IsProjection bool              `json:"isProjection"`
+	// DueDate is when a manual movement falls due. Siigo receipts leave it
+	// empty — they are already settled — and before this existed the movement
+	// date stood in for it.
+	DueDate          string `json:"dueDate,omitempty"`
+	SecondaryDueDate string `json:"secondaryDueDate,omitempty"`
+	EffectiveDueDate string `json:"effectiveDueDate,omitempty"` // computed
+	DueDateShiftDays *int   `json:"dueDateShiftDays,omitempty"` // computed
 	// Counterparty of a synced document: the client of an RC, the supplier of
 	// an RP. Empty on manual movements and projections.
 	CounterpartyIdentification string      `json:"counterpartyIdentification,omitempty"`
@@ -107,6 +114,37 @@ func PendingInstallments(total, balance float64, schedule []Installment, fallbac
 	return out
 }
 
+// EffectiveDueDate is the date a document is actually expected to be paid: the
+// agreed date when one has been set, otherwise what the document itself says.
+// Everything that answers "when does this money move" — cash flow, projections,
+// alerts — reads this rather than the raw due date.
+func EffectiveDueDate(original, secondary string) string {
+	if secondary != "" {
+		return secondary
+	}
+	return original
+}
+
+// DueDateShiftDays is how far the agreed date moves the document, in days:
+// positive when it is pushed out, negative when it is pulled in. Reported so
+// the slippage stays visible even though the agreed date now governs — the
+// point of keeping both dates is that neither hides the other.
+func DueDateShiftDays(original, secondary string) (int, bool) {
+	if original == "" || secondary == "" {
+		return 0, false
+	}
+	const layout = "2006-01-02"
+	o, err := time.Parse(layout, original)
+	if err != nil {
+		return 0, false
+	}
+	n, err := time.Parse(layout, secondary)
+	if err != nil {
+		return 0, false
+	}
+	return int(n.Sub(o).Hours() / 24), true
+}
+
 // ThirdParty is a document's counterparty, resolved against the customers
 // table at read time. Siigo's document payloads carry only the key — no name —
 // so Name and friends are filled in from the synced third party and are never
@@ -133,15 +171,18 @@ func ThirdPartyKey(identification string, branchOffice int) string {
 }
 
 type Invoice struct {
-	ID                     string            `json:"id"`
-	ExternalID             string            `json:"externalId"`
-	Source                 string            `json:"source"`
-	IsProjection           bool              `json:"isProjection"`
-	Reference              string            `json:"reference,omitempty"`
-	Prefix                 string            `json:"prefix,omitempty"`
-	Number                 int               `json:"number,omitempty"`
-	Date                   string            `json:"date"`
-	DueDate                string            `json:"dueDate,omitempty"`
+	ID           string `json:"id"`
+	ExternalID   string `json:"externalId"`
+	Source       string `json:"source"`
+	IsProjection bool   `json:"isProjection"`
+	Reference    string `json:"reference,omitempty"`
+	Prefix       string `json:"prefix,omitempty"`
+	Number       int    `json:"number,omitempty"`
+	Date         string `json:"date"`
+	DueDate      string `json:"dueDate,omitempty"`
+	// SecondaryDueDate is the agreed payment date — the only field on a Siigo
+	// document a user may edit, and never touched by a sync.
+	SecondaryDueDate       string            `json:"secondaryDueDate,omitempty"`
 	CustomerIdentification string            `json:"customerIdentification,omitempty"`
 	CustomerBranchOffice   int               `json:"customerBranchOffice,omitempty"`
 	CustomerSiigoID        string            `json:"customerSiigoId,omitempty"`
@@ -154,21 +195,26 @@ type Invoice struct {
 	Installments           []Installment     `json:"installments,omitempty"`
 	PendingInstallments    []Installment     `json:"pendingInstallments,omitempty"` // computed, not persisted
 	ThirdParty             *ThirdParty       `json:"thirdParty,omitempty"`          // computed, not persisted
+	EffectiveDueDate       string            `json:"effectiveDueDate,omitempty"`    // computed, not persisted
+	DueDateShiftDays       *int              `json:"dueDateShiftDays,omitempty"`    // computed, not persisted
 	SyncedAt               time.Time         `json:"syncedAt"`
 	CreatedAt              time.Time         `json:"createdAt"`
 	UpdatedAt              time.Time         `json:"updatedAt"`
 }
 
 type Purchase struct {
-	ID                     string            `json:"id"`
-	ExternalID             string            `json:"externalId"`
-	Source                 string            `json:"source"`
-	IsProjection           bool              `json:"isProjection"`
-	Reference              string            `json:"reference,omitempty"`
-	Prefix                 string            `json:"prefix,omitempty"`
-	Number                 int               `json:"number,omitempty"`
-	Date                   string            `json:"date"`
-	DueDate                string            `json:"dueDate,omitempty"`
+	ID           string `json:"id"`
+	ExternalID   string `json:"externalId"`
+	Source       string `json:"source"`
+	IsProjection bool   `json:"isProjection"`
+	Reference    string `json:"reference,omitempty"`
+	Prefix       string `json:"prefix,omitempty"`
+	Number       int    `json:"number,omitempty"`
+	Date         string `json:"date"`
+	DueDate      string `json:"dueDate,omitempty"`
+	// SecondaryDueDate is the agreed payment date — the only field on a Siigo
+	// document a user may edit, and never touched by a sync.
+	SecondaryDueDate       string            `json:"secondaryDueDate,omitempty"`
 	ProviderIdentification string            `json:"providerIdentification,omitempty"`
 	ProviderBranchOffice   int               `json:"providerBranchOffice,omitempty"`
 	ProviderSiigoID        string            `json:"providerSiigoId,omitempty"`
@@ -181,6 +227,8 @@ type Purchase struct {
 	Installments           []Installment     `json:"installments,omitempty"`
 	PendingInstallments    []Installment     `json:"pendingInstallments,omitempty"` // computed, not persisted
 	ThirdParty             *ThirdParty       `json:"thirdParty,omitempty"`          // computed, not persisted
+	EffectiveDueDate       string            `json:"effectiveDueDate,omitempty"`    // computed, not persisted
+	DueDateShiftDays       *int              `json:"dueDateShiftDays,omitempty"`    // computed, not persisted
 	SyncedAt               time.Time         `json:"syncedAt"`
 	CreatedAt              time.Time         `json:"createdAt"`
 	UpdatedAt              time.Time         `json:"updatedAt"`
@@ -352,6 +400,10 @@ type NotificationItem struct {
 	DaysOverdue int         `json:"daysOverdue"` // negative = days until due
 	Urgency     string      `json:"urgency"`     // "overdue" | "due-soon" | "upcoming"
 	ThirdParty  *ThirdParty `json:"thirdParty,omitempty"`
+	// Set when the payment date was renegotiated: Date above is then the agreed
+	// one, and the shift says how far it moved from the original.
+	SecondaryDueDate string `json:"secondaryDueDate,omitempty"`
+	DueDateShiftDays *int   `json:"dueDateShiftDays,omitempty"`
 }
 
 type NotificationSummary struct {

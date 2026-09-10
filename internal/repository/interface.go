@@ -78,12 +78,16 @@ type Store interface {
 	GetPendingInvoices() ([]*domain.Invoice, error) // Pendiente + Parcial only
 	GetInvoiceByID(id string) (*domain.Invoice, bool, error)
 	UpsertInvoice(inv *domain.Invoice) (bool, error) // true = inserted
+	// SetInvoiceSecondaryDueDate writes the agreed payment date — the only
+	// manual edit allowed on a Siigo document. Empty clears it.
+	SetInvoiceSecondaryDueDate(id, date string) (bool, error)
 
 	// ── Purchases (FC — facturas de compra) ──────────────────────────────────────
 	GetAllPurchases() ([]*domain.Purchase, error)
 	GetPendingPurchases() ([]*domain.Purchase, error) // Pendiente + Parcial only
 	GetPurchaseByID(id string) (*domain.Purchase, bool, error)
 	UpsertPurchase(pur *domain.Purchase) (bool, error) // true = inserted
+	SetPurchaseSecondaryDueDate(id, date string) (bool, error)
 
 	// ── Customers (terceros sincronizados desde Siigo) ───────────────────────
 	GetAllCustomers() ([]*domain.Customer, error)

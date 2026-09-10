@@ -100,7 +100,7 @@ func (h *ProjectionsHandler) GetSummary(w http.ResponseWriter, r *http.Request) 
 		if inv.Status == domain.StatusCompleted || inv.Status == domain.StatusCancelled {
 			continue
 		}
-		for _, inst := range domain.PendingInstallments(inv.Total, inv.Balance, inv.Installments, firstNonEmpty(inv.DueDate, inv.Date)) {
+		for _, inst := range pendingOn(inv.Total, inv.Balance, inv.Installments, firstNonEmpty(inv.DueDate, inv.Date), inv.SecondaryDueDate) {
 			daysAway, ok := parseDaysAway(inst.DueDate)
 			if !ok || daysAway > days {
 				continue
@@ -114,7 +114,7 @@ func (h *ProjectionsHandler) GetSummary(w http.ResponseWriter, r *http.Request) 
 		if pur.Status == domain.StatusCompleted || pur.Status == domain.StatusCancelled {
 			continue
 		}
-		for _, inst := range domain.PendingInstallments(pur.Total, pur.Balance, pur.Installments, firstNonEmpty(pur.DueDate, pur.Date)) {
+		for _, inst := range pendingOn(pur.Total, pur.Balance, pur.Installments, firstNonEmpty(pur.DueDate, pur.Date), pur.SecondaryDueDate) {
 			daysAway, ok := parseDaysAway(inst.DueDate)
 			if !ok || daysAway > days {
 				continue
@@ -182,7 +182,7 @@ func (h *ProjectionsHandler) GetSummary(w http.ResponseWriter, r *http.Request) 
 			desc = inv.Category
 		}
 		ref := firstNonEmpty(inv.Reference, inv.Detail)
-		pending := domain.PendingInstallments(inv.Total, inv.Balance, inv.Installments, firstNonEmpty(inv.DueDate, inv.Date))
+		pending := pendingOn(inv.Total, inv.Balance, inv.Installments, firstNonEmpty(inv.DueDate, inv.Date), inv.SecondaryDueDate)
 		for i, inst := range pending {
 			daysAway, ok := parseDaysAway(inst.DueDate)
 			if !ok || daysAway > days {
@@ -215,7 +215,7 @@ func (h *ProjectionsHandler) GetSummary(w http.ResponseWriter, r *http.Request) 
 			desc = pur.Category
 		}
 		ref := firstNonEmpty(pur.Reference, pur.Detail)
-		pending := domain.PendingInstallments(pur.Total, pur.Balance, pur.Installments, firstNonEmpty(pur.DueDate, pur.Date))
+		pending := pendingOn(pur.Total, pur.Balance, pur.Installments, firstNonEmpty(pur.DueDate, pur.Date), pur.SecondaryDueDate)
 		for i, inst := range pending {
 			daysAway, ok := parseDaysAway(inst.DueDate)
 			if !ok || daysAway > days {

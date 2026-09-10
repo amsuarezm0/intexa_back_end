@@ -95,6 +95,7 @@ func (h *TransactionsHandler) List(w http.ResponseWriter, r *http.Request) {
 
 	page_ := filtered[start:end]
 	attachToTransactions(thirdPartyDirectory(h.store), page_)
+	attachDueDatesToTransactions(page_)
 
 	jsonOK(w, domain.TransactionListResponse{
 		Data:       page_,
@@ -118,6 +119,7 @@ func (h *TransactionsHandler) Get(w http.ResponseWriter, r *http.Request) {
 	}
 	t.ThirdParty = resolveThirdParty(thirdPartyDirectory(h.store),
 		t.CounterpartyIdentification, t.CounterpartyBranchOffice, t.CounterpartySiigoID)
+	transactionDueDates(t)
 	jsonOK(w, t)
 }
 
@@ -153,6 +155,7 @@ func (h *TransactionsHandler) Create(w http.ResponseWriter, r *http.Request) {
 	})
 	t.ThirdParty = resolveThirdParty(thirdPartyDirectory(h.store),
 		t.CounterpartyIdentification, t.CounterpartyBranchOffice, t.CounterpartySiigoID)
+	transactionDueDates(&t)
 	jsonCreated(w, t)
 }
 
@@ -195,6 +198,7 @@ func (h *TransactionsHandler) Update(w http.ResponseWriter, r *http.Request) {
 	})
 	t.ThirdParty = resolveThirdParty(thirdPartyDirectory(h.store),
 		t.CounterpartyIdentification, t.CounterpartyBranchOffice, t.CounterpartySiigoID)
+	transactionDueDates(&t)
 	jsonOK(w, t)
 }
 

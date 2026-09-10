@@ -30,7 +30,11 @@ func (h *NotificationsHandler) GetNotifications(w http.ResponseWriter, r *http.R
 	var gastos, ingresos []domain.NotificationItem
 
 	for _, t := range pending {
-		d, err := time.Parse("2006-01-02", t.Date)
+		// Urgency follows the agreed payment date when one exists: a document
+		// with a renegotiated date is not overdue against the old one. The
+		// shift is still reported so the slippage stays visible.
+		transactionDueDates(t)
+		d, err := time.Parse("2006-01-02", firstNonEmpty(t.EffectiveDueDate, t.Date))
 		if err != nil {
 			d = t.CreatedAt
 		}
@@ -52,10 +56,12 @@ func (h *NotificationsHandler) GetNotifications(w http.ResponseWriter, r *http.R
 			Title:       t.Description,
 			Category:    t.Category,
 			Amount:      t.Amount,
-			Date:        t.Date,
-			DaysOverdue: daysOverdue,
-			Urgency:     urgency,
-			ThirdParty:  tp,
+			Date:             firstNonEmpty(t.EffectiveDueDate, t.Date),
+			DaysOverdue:      daysOverdue,
+			Urgency:          urgency,
+			ThirdParty:       tp,
+			SecondaryDueDate: t.SecondaryDueDate,
+			DueDateShiftDays: t.DueDateShiftDays,
 		}
 
 		if t.Type == domain.TypeEgreso {

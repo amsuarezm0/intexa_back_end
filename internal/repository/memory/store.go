@@ -1001,6 +1001,30 @@ func (s *Store) UpsertInvoice(inv *domain.Invoice) (bool, error) {
 	return true, nil
 }
 
+func (s *Store) SetInvoiceSecondaryDueDate(id, date string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	inv, ok := s.invoices[id]
+	if !ok {
+		return false, nil
+	}
+	inv.SecondaryDueDate = date
+	inv.UpdatedAt = time.Now()
+	return true, nil
+}
+
+func (s *Store) SetPurchaseSecondaryDueDate(id, date string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pur, ok := s.purchases[id]
+	if !ok {
+		return false, nil
+	}
+	pur.SecondaryDueDate = date
+	pur.UpdatedAt = time.Now()
+	return true, nil
+}
+
 // ── Customers ─────────────────────────────────────────────────────────────────
 
 // customerKey is the identity of a third party: the same NIT can legitimately

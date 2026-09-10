@@ -97,14 +97,14 @@ func (h *CashFlowHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 
 	var pendingInc, pendingExp float64
 	for _, inv := range invoices {
-		for _, inst := range domain.PendingInstallments(inv.Total, inv.Balance, inv.Installments, firstNonEmpty(inv.DueDate, inv.Date)) {
+		for _, inst := range pendingOn(inv.Total, inv.Balance, inv.Installments, firstNonEmpty(inv.DueDate, inv.Date), inv.SecondaryDueDate) {
 			if d, ok := parseDate(inst.DueDate); ok && !d.After(horizon30) {
 				pendingInc += inst.Value
 			}
 		}
 	}
 	for _, pur := range purchases {
-		for _, inst := range domain.PendingInstallments(pur.Total, pur.Balance, pur.Installments, firstNonEmpty(pur.DueDate, pur.Date)) {
+		for _, inst := range pendingOn(pur.Total, pur.Balance, pur.Installments, firstNonEmpty(pur.DueDate, pur.Date), pur.SecondaryDueDate) {
 			if d, ok := parseDate(inst.DueDate); ok && !d.After(horizon30) {
 				pendingExp += inst.Value
 			}
@@ -151,10 +151,7 @@ func (h *CashFlowHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 		if inv.Status == domain.StatusPartial {
 			title = "Cobro Parcial"
 		}
-		dueDate := inv.DueDate
-		if dueDate == "" {
-			dueDate = inv.Date
-		}
+		dueDate := domain.EffectiveDueDate(firstNonEmpty(inv.DueDate, inv.Date), inv.SecondaryDueDate)
 		tp := resolveThirdParty(dir, inv.CustomerIdentification, inv.CustomerBranchOffice, inv.CustomerSiigoID)
 		alerts = append(alerts, domain.Alert{
 			ID:          inv.ID,
@@ -171,10 +168,7 @@ func (h *CashFlowHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 		if pur.Status == domain.StatusPartial {
 			title = "Pago Parcial"
 		}
-		dueDate := pur.DueDate
-		if dueDate == "" {
-			dueDate = pur.Date
-		}
+		dueDate := domain.EffectiveDueDate(firstNonEmpty(pur.DueDate, pur.Date), pur.SecondaryDueDate)
 		tp := resolveThirdParty(dir, pur.ProviderIdentification, pur.ProviderBranchOffice, pur.ProviderSiigoID)
 		alerts = append(alerts, domain.Alert{
 			ID:          pur.ID,
@@ -237,12 +231,12 @@ func (h *CashFlowHandler) GetPeriodData(w http.ResponseWriter, r *http.Request) 
 	// pending amounts across their due dates instead of the whole balance.
 	for _, inv := range data.Invoices {
 		if inv.Status == domain.StatusPending || inv.Status == domain.StatusPartial {
-			inv.PendingInstallments = domain.PendingInstallments(inv.Total, inv.Balance, inv.Installments, firstNonEmpty(inv.DueDate, inv.Date))
+			inv.PendingInstallments = pendingOn(inv.Total, inv.Balance, inv.Installments, firstNonEmpty(inv.DueDate, inv.Date), inv.SecondaryDueDate)
 		}
 	}
 	for _, pur := range data.Purchases {
 		if pur.Status == domain.StatusPending || pur.Status == domain.StatusPartial {
-			pur.PendingInstallments = domain.PendingInstallments(pur.Total, pur.Balance, pur.Installments, firstNonEmpty(pur.DueDate, pur.Date))
+			pur.PendingInstallments = pendingOn(pur.Total, pur.Balance, pur.Installments, firstNonEmpty(pur.DueDate, pur.Date), pur.SecondaryDueDate)
 		}
 	}
 	// Name the counterparty on every document in the period, so the cash-flow
@@ -251,5 +245,8 @@ func (h *CashFlowHandler) GetPeriodData(w http.ResponseWriter, r *http.Request) 
 	attachToInvoices(dir, data.Invoices)
 	attachToPurchases(dir, data.Purchases)
 	attachToTransactionPtrs(dir, data.Transactions)
+	attachDueDatesToInvoices(data.Invoices)
+	attachDueDatesToPurchases(data.Purchases)
+	attachDueDatesToTransactionPtrs(data.Transactions)
 	jsonOK(w, data)
 }

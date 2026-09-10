@@ -38,6 +38,7 @@ const transactionCols = `
 	COALESCE(reference,''), COALESCE(detail,''), source, COALESCE(external_id,''),
 	is_projection,
 	counterparty_identification, counterparty_branch_office, counterparty_siigo_id,
+	COALESCE(due_date::TEXT,''), COALESCE(secondary_due_date::TEXT,''),
 	created_at, updated_at`
 
 // ── Transactions ──────────────────────────────────────────────────────────────
@@ -70,13 +71,16 @@ func (s *Store) CreateTransaction(t *domain.Transaction) error {
 	return s.pool.QueryRow(bg(), `
 		INSERT INTO transactions
 		  (id, date, description, category, type, amount, status, reference, detail, source, external_id, is_projection,
-		   counterparty_identification, counterparty_branch_office, counterparty_siigo_id)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,NULLIF($8,''),$9,$10,NULLIF($11,''),$12,$13,$14,$15)
+		   counterparty_identification, counterparty_branch_office, counterparty_siigo_id,
+		   due_date, secondary_due_date)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,NULLIF($8,''),$9,$10,NULLIF($11,''),$12,$13,$14,$15,
+		        NULLIF($16,'')::DATE, NULLIF($17,'')::DATE)
 		RETURNING created_at, updated_at`,
 		t.ID, parseDate(t.Date), t.Description, t.Category, string(t.Type),
 		t.Amount, string(t.Status), t.Reference, t.Detail, string(t.Source),
 		t.ExternalID, t.IsProjection,
 		t.CounterpartyIdentification, t.CounterpartyBranchOffice, t.CounterpartySiigoID,
+		t.DueDate, t.SecondaryDueDate,
 	).Scan(&t.CreatedAt, &t.UpdatedAt)
 }
 
@@ -132,11 +136,13 @@ func (s *Store) UpdateTransaction(t *domain.Transaction) (bool, error) {
 		SET    date=$1, description=$2, category=$3, type=$4, amount=$5,
 		       status=$6, reference=NULLIF($7,''), detail=$8, source=$9,
 		       counterparty_identification=$10, counterparty_branch_office=$11, counterparty_siigo_id=$12,
+		       due_date=NULLIF($13,'')::DATE, secondary_due_date=NULLIF($14,'')::DATE,
 		       updated_at=now()
-		WHERE  id=$13`,
+		WHERE  id=$15`,
 		parseDate(t.Date), t.Description, t.Category, string(t.Type),
 		t.Amount, string(t.Status), t.Reference, t.Detail, string(t.Source),
-		t.CounterpartyIdentification, t.CounterpartyBranchOffice, t.CounterpartySiigoID, t.ID)
+		t.CounterpartyIdentification, t.CounterpartyBranchOffice, t.CounterpartySiigoID,
+		t.DueDate, t.SecondaryDueDate, t.ID)
 	return tag.RowsAffected() > 0, err
 }
 
@@ -824,6 +830,7 @@ func (s *Store) SetBankBalance(b domain.BankBalance) error {
 const invoiceCols = `
 	id, external_id, source, is_projection,
 	COALESCE(reference,''), COALESCE(prefix,''), COALESCE(number,0), date::TEXT, COALESCE(due_date::TEXT,''),
+	COALESCE(secondary_due_date::TEXT,''),
 	COALESCE(customer_identification,''), customer_branch_office, customer_siigo_id, COALESCE(customer_name,''),
 	amount, balance, status, category, COALESCE(detail,''),
 	COALESCE(installments,'[]'::jsonb),
@@ -906,6 +913,7 @@ func (s *Store) UpsertInvoice(inv *domain.Invoice) (bool, error) {
 const purchaseCols = `
 	id, external_id, source, is_projection,
 	COALESCE(reference,''), COALESCE(prefix,''), COALESCE(number,0), date::TEXT, COALESCE(due_date::TEXT,''),
+	COALESCE(secondary_due_date::TEXT,''),
 	COALESCE(provider_identification,''), provider_branch_office, provider_siigo_id, COALESCE(provider_name,''),
 	amount, balance, status, category, COALESCE(detail,''),
 	COALESCE(installments,'[]'::jsonb),
@@ -1009,6 +1017,7 @@ func scanTransaction(row scanner) (*domain.Transaction, error) {
 		&txType, &t.Amount, &txStatus, &t.Reference, &t.Detail,
 		&txSource, &t.ExternalID, &t.IsProjection,
 		&t.CounterpartyIdentification, &t.CounterpartyBranchOffice, &t.CounterpartySiigoID,
+		&t.DueDate, &t.SecondaryDueDate,
 		&t.CreatedAt, &t.UpdatedAt)
 	if err != nil {
 		return nil, err
@@ -1049,7 +1058,7 @@ func scanInvoice(row scanner) (*domain.Invoice, error) {
 	var installments []byte
 	err := row.Scan(
 		&inv.ID, &inv.ExternalID, &inv.Source, &inv.IsProjection,
-		&inv.Reference, &inv.Prefix, &inv.Number, &inv.Date, &inv.DueDate,
+		&inv.Reference, &inv.Prefix, &inv.Number, &inv.Date, &inv.DueDate, &inv.SecondaryDueDate,
 		&inv.CustomerIdentification, &inv.CustomerBranchOffice, &inv.CustomerSiigoID, &inv.CustomerName,
 		&inv.Total, &inv.Balance, &status, &inv.Category, &inv.Detail,
 		&installments,
@@ -1083,7 +1092,7 @@ func scanPurchase(row scanner) (*domain.Purchase, error) {
 	var installments []byte
 	err := row.Scan(
 		&pur.ID, &pur.ExternalID, &pur.Source, &pur.IsProjection,
-		&pur.Reference, &pur.Prefix, &pur.Number, &pur.Date, &pur.DueDate,
+		&pur.Reference, &pur.Prefix, &pur.Number, &pur.Date, &pur.DueDate, &pur.SecondaryDueDate,
 		&pur.ProviderIdentification, &pur.ProviderBranchOffice, &pur.ProviderSiigoID, &pur.ProviderName,
 		&pur.Total, &pur.Balance, &status, &pur.Category, &pur.Detail,
 		&installments,
@@ -1109,6 +1118,22 @@ func scanPurchases(rows pgx.Rows) ([]*domain.Purchase, error) {
 		list = append(list, pur)
 	}
 	return list, rows.Err()
+}
+
+// SetInvoiceSecondaryDueDate / SetPurchaseSecondaryDueDate are the only writes
+// a user can make to a Siigo document. They touch one column deliberately: an
+// empty date clears the agreement and hands the document back to its original
+// due date.
+func (s *Store) SetInvoiceSecondaryDueDate(id, date string) (bool, error) {
+	tag, err := s.pool.Exec(bg(),
+		`UPDATE invoices SET secondary_due_date=NULLIF($1,'')::DATE, updated_at=now() WHERE id=$2`, date, id)
+	return tag.RowsAffected() > 0, err
+}
+
+func (s *Store) SetPurchaseSecondaryDueDate(id, date string) (bool, error) {
+	tag, err := s.pool.Exec(bg(),
+		`UPDATE purchases SET secondary_due_date=NULLIF($1,'')::DATE, updated_at=now() WHERE id=$2`, date, id)
+	return tag.RowsAffected() > 0, err
 }
 
 // ── Customers ─────────────────────────────────────────────────────────────────
