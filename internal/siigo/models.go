@@ -130,7 +130,7 @@ type Purchase struct {
 	Name         string           `json:"name"`
 	Date         string           `json:"date"`
 	DueDate      string           `json:"due_date"`
-	Provider     PurchaseProvider `json:"provider"`
+	Supplier     DocumentParty    `json:"supplier"`
 	Total        float64          `json:"total"`
 	Balance      float64          `json:"balance"`
 	Observations string           `json:"observations"`
@@ -138,14 +138,15 @@ type Purchase struct {
 	Items        []InvoiceItem    `json:"items"`
 }
 
-type PurchaseProvider struct {
-	PersonType     string `json:"person_type"`
-	IDType         string `json:"id_type"`
+// DocumentParty is the third-party reference every document list endpoint
+// carries — invoices under "customer", purchases and payment receipts under
+// "supplier". It is deliberately slim because that is all Siigo sends here: no
+// name, no address. The display name lives in the customers table, matched on
+// Identification + BranchOffice (or on ID, which is customers.siigo_id).
+type DocumentParty struct {
+	ID             string `json:"id"`
 	Identification string `json:"identification"`
 	BranchOffice   int    `json:"branch_office"`
-	Name           string `json:"name"`
-	CommercialName string `json:"commercial_name"`
-	Active         bool   `json:"active"`
 }
 
 // Voucher (RC — comprobante de cobro, ingreso real de caja)
@@ -219,7 +220,7 @@ type PaymentReceipt struct {
 	Number       int                    `json:"number"`
 	Name         string                 `json:"name"`
 	Date         string                 `json:"date"` // YYYY-MM-DD
-	Provider     PaymentReceiptProvider `json:"provider"`
+	Supplier     DocumentParty          `json:"supplier"`
 	Total        float64                `json:"total"`
 	Observations string                 `json:"observations"`
 	Items        []PaymentReceiptItem   `json:"items"`
@@ -234,8 +235,83 @@ type PaymentReceiptItem struct {
 	Account     VoucherAccount `json:"account"`
 }
 
-type PaymentReceiptProvider struct {
+// Customer (tercero)
+//
+// /v1/customers returns every third party on the account, not only customers:
+// Type tells them apart ("Customer" | "Supplier" | "Other"). Identification is
+// not unique — a company with several branch offices repeats it once per
+// branch — so ID (Siigo's UUID) is the only safe key.
+
+type CustomerListResponse struct {
+	Pagination Pagination `json:"pagination"`
+	Results    []Customer `json:"results"`
+}
+
+type Customer struct {
+	ID             string `json:"id"`
+	Type           string `json:"type"`
+	PersonType     string `json:"person_type"` // "Person" | "Company"
+	IDType         IDType `json:"id_type"`
 	Identification string `json:"identification"`
-	Name           string `json:"name"`
+	// CheckDigit is the NIT's verification digit; absent on some records.
+	CheckDigit   *string `json:"check_digit"`
+	BranchOffice int     `json:"branch_office"`
+	// Name comes as an array: one element for a company, two (given, family)
+	// for a person. Joining the parts is the only way back to a display name.
+	Name                   []string                `json:"name"`
+	CommercialName         *string                 `json:"commercial_name"`
+	Active                 bool                    `json:"active"`
+	VatResponsible         bool                    `json:"vat_responsible"`
+	FiscalResponsibilities []FiscalResponsibility  `json:"fiscal_responsibilities"`
+	Address                CustomerAddress         `json:"address"`
+	Phones                 []CustomerPhone         `json:"phones"`
+	Contacts               []CustomerContact       `json:"contacts"`
+	Comments               *string                 `json:"comments"`
+	Metadata               CustomerMetadata        `json:"metadata"`
+}
+
+type IDType struct {
+	Code string `json:"code"`
+	Name string `json:"name"`
+}
+
+type FiscalResponsibility struct {
+	Code string `json:"code"`
+	Name string `json:"name"`
+}
+
+type CustomerAddress struct {
+	Address    string `json:"address"`
+	City       City   `json:"city"`
+	PostalCode string `json:"postal_code"`
+}
+
+type City struct {
+	CountryCode string `json:"country_code"`
+	CountryName string `json:"country_name"`
+	StateCode   string `json:"state_code"`
+	StateName   string `json:"state_name"`
+	CityCode    string `json:"city_code"`
+	CityName    string `json:"city_name"`
+}
+
+type CustomerPhone struct {
+	Indicative string `json:"indicative"`
+	Number     string `json:"number"`
+	Extension  string `json:"extension"`
+}
+
+type CustomerContact struct {
+	FirstName string        `json:"first_name"`
+	LastName  string        `json:"last_name"`
+	Email     string        `json:"email"`
+	Phone     CustomerPhone `json:"phone"`
+}
+
+// CustomerMetadata timestamps are naive local strings ("2024-04-08T21:20:05.243"),
+// with LastUpdated only present on records edited since Siigo started tracking it.
+type CustomerMetadata struct {
+	Created     string `json:"created"`
+	LastUpdated string `json:"last_updated"`
 }
 

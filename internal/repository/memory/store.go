@@ -27,6 +27,7 @@ type Store struct {
 	transactions map[string]*domain.Transaction
 	invoices     map[string]*domain.Invoice
 	purchases    map[string]*domain.Purchase
+	customers    map[string]*domain.Customer
 	users        map[string]*domain.User
 	domains      map[string]struct{}
 	categories   []domain.Category
@@ -43,6 +44,7 @@ func New() *Store {
 		transactions: make(map[string]*domain.Transaction),
 		invoices:     make(map[string]*domain.Invoice),
 		purchases:    make(map[string]*domain.Purchase),
+		customers:    make(map[string]*domain.Customer),
 		users:        make(map[string]*domain.User),
 		domains:      make(map[string]struct{}),
 		budgets:      make(map[budgetKey]float64),
@@ -997,6 +999,113 @@ func (s *Store) UpsertInvoice(inv *domain.Invoice) (bool, error) {
 	cp := *inv
 	s.invoices[inv.ID] = &cp
 	return true, nil
+}
+
+// ── Customers ─────────────────────────────────────────────────────────────────
+
+// customerKey is the identity of a third party: the same NIT can legitimately
+// appear once per branch office, but never twice for the same branch.
+func customerKey(identification string, branchOffice int) string {
+	return fmt.Sprintf("%s#%d", identification, branchOffice)
+}
+
+func (s *Store) GetAllCustomers() ([]*domain.Customer, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	list := make([]*domain.Customer, 0, len(s.customers))
+	for _, c := range s.customers {
+		cp := *c
+		list = append(list, &cp)
+	}
+	sort.Slice(list, func(i, j int) bool { return list[i].Name < list[j].Name })
+	return list, nil
+}
+
+func (s *Store) GetCustomerByID(id string) (*domain.Customer, bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	c, ok := s.customers[id]
+	if !ok {
+		return nil, false, nil
+	}
+	cp := *c
+	return &cp, true, nil
+}
+
+func (s *Store) UpsertCustomer(c *domain.Customer) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := customerKey(c.Identification, c.BranchOffice)
+	now := time.Now()
+	for id, existing := range s.customers {
+		if customerKey(existing.Identification, existing.BranchOffice) != key {
+			continue
+		}
+		cp := *c
+		cp.ID = id
+		cp.CreatedAt = existing.CreatedAt
+		cp.SyncedAt = now
+		cp.UpdatedAt = now
+		s.customers[id] = &cp
+		c.ID, c.CreatedAt, c.SyncedAt, c.UpdatedAt = id, existing.CreatedAt, now, now
+		return false, nil
+	}
+	c.ID = uuid.NewString()
+	c.CreatedAt, c.SyncedAt, c.UpdatedAt = now, now, now
+	cp := *c
+	s.customers[c.ID] = &cp
+	return true, nil
+}
+
+func (s *Store) DeactivateCustomersNotSyncedSince(t time.Time) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, c := range s.customers {
+		if c.Active && c.SyncedAt.Before(t) {
+			c.Active = false
+			c.UpdatedAt = time.Now()
+			n++
+		}
+	}
+	return n, nil
+}
+
+func (s *Store) GetCustomerAggregates() (map[string]domain.CustomerAggregate, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make(map[string]domain.CustomerAggregate)
+	for _, inv := range s.invoices {
+		if inv.CustomerIdentification == "" {
+			continue
+		}
+		a := out[inv.CustomerIdentification]
+		a.Identification = inv.CustomerIdentification
+		a.InvoiceCount++
+		a.TotalInvoiced += inv.Total
+		if inv.Status == domain.StatusPending || inv.Status == domain.StatusPartial {
+			a.PendingBalance += inv.Balance
+		}
+		if inv.Date > a.LastInvoiceDate {
+			a.LastInvoiceDate = inv.Date
+		}
+		out[inv.CustomerIdentification] = a
+	}
+	return out, nil
+}
+
+func (s *Store) GetInvoicesByCustomer(identification string) ([]*domain.Invoice, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	list := make([]*domain.Invoice, 0)
+	for _, inv := range s.invoices {
+		if inv.CustomerIdentification == identification {
+			cp := *inv
+			list = append(list, &cp)
+		}
+	}
+	sort.Slice(list, func(i, j int) bool { return list[i].Date > list[j].Date })
+	return list, nil
 }
 
 // ── Purchases ─────────────────────────────────────────────────────────────────

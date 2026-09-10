@@ -65,6 +65,7 @@ func main() {
 	users := handler.NewUsersHandler(store)
 	settings := handler.NewSettingsHandler(store)
 	siigoH := handler.NewSiigoHandler(store)
+	customers := handler.NewCustomersHandler(store)
 	domains := handler.NewDomainsHandler(store)
 	exchangeRates := handler.NewExchangeRateHandler()
 	notifications := handler.NewNotificationsHandler(store)
@@ -137,6 +138,11 @@ func main() {
 			r.Get("/exchange-rates", exchangeRates.GetRates)
 			r.Get("/categories", settings.GetCategories)
 			r.Get("/siigo/status", siigoH.Status)
+			// Clientes — read-only for every authenticated role. The static
+			// path is registered before "/{id}" so it isn't swallowed by it.
+			r.Get("/customers/summary", customers.Summary)
+			r.Get("/customers", customers.List)
+			r.Get("/customers/{id}", customers.Get)
 
 			// Movements & Siigo sync — ADMINISTRADOR + TESORERÍA
 			r.Group(func(r chi.Router) {
@@ -147,6 +153,8 @@ func main() {
 				r.Put("/transactions/{id}", transactions.Update)
 				r.Delete("/transactions/{id}", transactions.Delete)
 				r.Post("/siigo/sync", siigoH.Sync)
+				// Refreshes only the Clientes module, from that view.
+				r.Post("/siigo/sync/customers", siigoH.SyncCustomers)
 			})
 
 			// Categories — every role that writes data, i.e. all but CONSULTA

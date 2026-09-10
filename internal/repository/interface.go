@@ -85,6 +85,20 @@ type Store interface {
 	GetPurchaseByID(id string) (*domain.Purchase, bool, error)
 	UpsertPurchase(pur *domain.Purchase) (bool, error) // true = inserted
 
+	// ── Customers (terceros sincronizados desde Siigo) ───────────────────────
+	GetAllCustomers() ([]*domain.Customer, error)
+	GetCustomerByID(id string) (*domain.Customer, bool, error)
+	// UpsertCustomer keys on (identification, branch_office) so a sync can never
+	// create a second row for the same third party. true = inserted.
+	UpsertCustomer(c *domain.Customer) (bool, error)
+	// DeactivateCustomersNotSyncedSince flags customers missing from the latest
+	// full sync as inactive instead of deleting them, so history that references
+	// them stays readable. Returns how many were flagged.
+	DeactivateCustomersNotSyncedSince(t time.Time) (int, error)
+	// GetCustomerAggregates rolls invoices up by customer identification.
+	GetCustomerAggregates() (map[string]domain.CustomerAggregate, error)
+	GetInvoicesByCustomer(identification string) ([]*domain.Invoice, error)
+
 	// ── Bank balance ──────────────────────────────────────────────────────────
 	GetBankBalance() (*domain.BankBalance, error)
 	SetBankBalance(b domain.BankBalance) error

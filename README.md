@@ -90,7 +90,22 @@ Base path: `/api/v1`
 |---|---|---|
 | `POST` | `/siigo/connect` | Connect with Siigo credentials |
 | `GET` | `/siigo/status` | Check connection status |
-| `POST` | `/siigo/sync` | Sync invoices and purchase orders by date range |
+| `POST` | `/siigo/sync` | Sync invoices, purchases, receipts and customers |
+| `POST` | `/siigo/sync/customers` | Sync only the third-party (customer) list |
+
+### Clientes
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/customers` | List third parties (search, type, sort, pagination) |
+| `GET` | `/customers/summary` | Counts plus total invoiced and outstanding balance |
+| `GET` | `/customers/{id}` | One third party with the invoices issued to it |
+
+> Third parties are synced from Siigo's `/v1/customers` and are read-only in ArCa.
+> `type` is `Cliente`, `Proveedor` or `Otro`. Identity is `(identification, branch_office)` —
+> a NIT repeats once per branch office — so a sync updates in place and never duplicates a
+> client. A record Siigo stops returning is deactivated rather than deleted, and only after
+> a run in which every customer page succeeded.
 
 ### Administration
 

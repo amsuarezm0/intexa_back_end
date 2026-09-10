@@ -1093,6 +1093,161 @@ func scanPurchases(rows pgx.Rows) ([]*domain.Purchase, error) {
 	return list, rows.Err()
 }
 
+// ── Customers ─────────────────────────────────────────────────────────────────
+
+const customerCols = `
+	id, external_id, siigo_id, type, person_type, id_type, identification,
+	check_digit, branch_office, name, commercial_name, active, vat_responsible,
+	address, city, state, country, postal_code, email, phone,
+	COALESCE(phones,'[]'::jsonb), COALESCE(contacts,'[]'::jsonb),
+	siigo_created_at, siigo_updated_at,
+	synced_at, created_at, updated_at`
+
+func (s *Store) GetAllCustomers() ([]*domain.Customer, error) {
+	rows, err := s.pool.Query(bg(), `SELECT`+customerCols+` FROM customers ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanCustomers(rows)
+}
+
+func (s *Store) GetCustomerByID(id string) (*domain.Customer, bool, error) {
+	row := s.pool.QueryRow(bg(), `SELECT`+customerCols+` FROM customers WHERE id=$1`, id)
+	c, err := scanCustomer(row)
+	if err == pgx.ErrNoRows {
+		return nil, false, nil
+	}
+	return c, err == nil, err
+}
+
+// UpsertCustomer resolves on (identification, branch_office) — the identity of a
+// third party in Siigo — so re-running a sync updates the existing row instead
+// of adding a second one, even if Siigo hands back a different record UUID.
+func (s *Store) UpsertCustomer(c *domain.Customer) (bool, error) {
+	newID := uuid.NewString()
+	var actualID string
+	var inserted bool
+	err := s.pool.QueryRow(bg(), `
+		INSERT INTO customers
+		  (id, external_id, siigo_id, type, person_type, id_type, identification,
+		   check_digit, branch_office, name, commercial_name, active, vat_responsible,
+		   address, city, state, country, postal_code, email, phone, phones, contacts,
+		   siigo_created_at, siigo_updated_at, synced_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,now())
+		ON CONFLICT (identification, branch_office) DO UPDATE
+		  SET external_id=$2, siigo_id=$3, type=$4, person_type=$5, id_type=$6,
+		      check_digit=$8, name=$10, commercial_name=$11, active=$12,
+		      vat_responsible=$13, address=$14, city=$15, state=$16, country=$17,
+		      postal_code=$18, email=$19, phone=$20, phones=$21, contacts=$22,
+		      siigo_created_at=$23, siigo_updated_at=$24,
+		      synced_at=now(), updated_at=now()
+		RETURNING id, (xmax = 0) AS inserted, created_at, updated_at, synced_at`,
+		newID, c.ExternalID, c.SiigoID, string(c.Type), c.PersonType, c.IDType,
+		c.Identification, c.CheckDigit, c.BranchOffice, c.Name, c.CommercialName,
+		c.Active, c.VatResponsible, c.Address, c.City, c.State, c.Country,
+		c.PostalCode, c.Email, c.Phone,
+		jsonOrEmptyArray(c.Phones), jsonOrEmptyArray(c.Contacts),
+		c.SiigoCreatedAt, c.SiigoUpdatedAt,
+	).Scan(&actualID, &inserted, &c.CreatedAt, &c.UpdatedAt, &c.SyncedAt)
+	c.ID = actualID
+	return inserted, err
+}
+
+func (s *Store) DeactivateCustomersNotSyncedSince(t time.Time) (int, error) {
+	tag, err := s.pool.Exec(bg(),
+		`UPDATE customers SET active=false, updated_at=now()
+		 WHERE synced_at < $1 AND active`, t)
+	return int(tag.RowsAffected()), err
+}
+
+// GetCustomerAggregates rolls the invoice table up by customer identification.
+// Invoices carry the identification rather than a customer FK, so this is the
+// join key — meaning a customer's branches share one roll-up, which matches how
+// the invoices themselves are issued.
+func (s *Store) GetCustomerAggregates() (map[string]domain.CustomerAggregate, error) {
+	rows, err := s.pool.Query(bg(), `
+		SELECT COALESCE(customer_identification,''),
+		       COUNT(*),
+		       COALESCE(SUM(amount),0),
+		       COALESCE(SUM(CASE WHEN status IN ('Pendiente','Parcial') THEN balance ELSE 0 END),0),
+		       COALESCE(MAX(date)::TEXT,'')
+		FROM   invoices
+		WHERE  customer_identification IS NOT NULL AND customer_identification <> ''
+		GROUP  BY customer_identification`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make(map[string]domain.CustomerAggregate)
+	for rows.Next() {
+		var a domain.CustomerAggregate
+		if err := rows.Scan(&a.Identification, &a.InvoiceCount, &a.TotalInvoiced,
+			&a.PendingBalance, &a.LastInvoiceDate); err != nil {
+			return nil, err
+		}
+		out[a.Identification] = a
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) GetInvoicesByCustomer(identification string) ([]*domain.Invoice, error) {
+	rows, err := s.pool.Query(bg(),
+		`SELECT`+invoiceCols+` FROM invoices WHERE customer_identification=$1 ORDER BY date DESC`,
+		identification)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanInvoices(rows)
+}
+
+func scanCustomer(row scanner) (*domain.Customer, error) {
+	var c domain.Customer
+	var cType string
+	var phones, contacts []byte
+	err := row.Scan(
+		&c.ID, &c.ExternalID, &c.SiigoID, &cType, &c.PersonType, &c.IDType,
+		&c.Identification, &c.CheckDigit, &c.BranchOffice, &c.Name, &c.CommercialName,
+		&c.Active, &c.VatResponsible, &c.Address, &c.City, &c.State, &c.Country,
+		&c.PostalCode, &c.Email, &c.Phone, &phones, &contacts,
+		&c.SiigoCreatedAt, &c.SiigoUpdatedAt,
+		&c.SyncedAt, &c.CreatedAt, &c.UpdatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	c.Type = domain.CustomerType(cType)
+	if len(phones) > 0 {
+		_ = json.Unmarshal(phones, &c.Phones)
+	}
+	if len(contacts) > 0 {
+		_ = json.Unmarshal(contacts, &c.Contacts)
+	}
+	return &c, nil
+}
+
+func scanCustomers(rows pgx.Rows) ([]*domain.Customer, error) {
+	list := make([]*domain.Customer, 0)
+	for rows.Next() {
+		c, err := scanCustomer(rows)
+		if err != nil {
+			return nil, err
+		}
+		list = append(list, c)
+	}
+	return list, rows.Err()
+}
+
+func jsonOrEmptyArray(v any) string {
+	b, err := json.Marshal(v)
+	if err != nil || len(b) == 0 || string(b) == "null" {
+		return "[]"
+	}
+	return string(b)
+}
+
 // ── Cashflow period ───────────────────────────────────────────────────────
 
 func (s *Store) GetPeriodData(from, to time.Time) (*domain.PeriodData, error) {

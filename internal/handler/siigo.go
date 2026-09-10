@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/intexa/arca-api/internal/domain"
@@ -101,6 +102,7 @@ func (h *SiigoHandler) SyncCron(w http.ResponseWriter, r *http.Request) {
 		"purchases_imported",        result.PurchasesImported,
 		"vouchers_imported",         result.VouchersImported,
 		"payment_receipts_imported", result.PaymentReceiptsImported,
+		"customers_imported",        result.CustomersImported,
 		"updated",                   result.Updated,
 		"date_start",                dateStart,
 		"date_end",                  dateEnd,
@@ -297,12 +299,25 @@ func (h *SiigoHandler) runSync(client *siigopkg.Client, mode domain.SiigoSyncMod
 	result := &domain.SiigoSyncResult{Mode: mode, DateStart: dateStart, DateEnd: dateEnd}
 	var resultMu sync.Mutex
 	sem := make(chan struct{}, siigoMaxConcurrent)
+	startedAt := time.Now()
+
+	// Customers ride along with every sync so the Clientes module stays current
+	// without a second trip. Its page errors are counted separately: the sweep
+	// that deactivates vanished third parties must only fire when the customer
+	// pages all succeeded, regardless of how the document passes fared.
+	var customerErrs atomic.Int64
+	syncCustomersPass := func() error {
+		n, err := h.syncCustomers(client, result, &resultMu, sem)
+		customerErrs.Store(int64(n))
+		return err
+	}
 
 	syncs := []func() error{
 		func() error { return h.syncInvoices(client, dateStart, dateEnd, result, &resultMu, sem) },
 		func() error { return h.syncPurchases(client, dateStart, dateEnd, result, &resultMu, sem) },
 		func() error { return h.syncVouchers(client, dateStart, dateEnd, result, &resultMu, sem) },
 		func() error { return h.syncPaymentReceipts(client, dateStart, dateEnd, result, &resultMu, sem) },
+		syncCustomersPass,
 	}
 
 	dbErrs := make([]error, len(syncs))
@@ -320,6 +335,7 @@ func (h *SiigoHandler) runSync(client *siigopkg.Client, mode domain.SiigoSyncMod
 	if err := errors.Join(dbErrs...); err != nil {
 		return result, err
 	}
+	h.sweepCustomers(startedAt, customerErrs.Load() == 0)
 
 	h.store.UpdateSiigoLastSync(time.Now())    //nolint
 	h.store.AddActivityLog(domain.ActivityLog{ //nolint
@@ -345,6 +361,7 @@ func (h *SiigoHandler) runSync(client *siigopkg.Client, mode domain.SiigoSyncMod
 			"purchases_imported",        result.PurchasesImported,
 			"vouchers_imported",         result.VouchersImported,
 			"payment_receipts_imported", result.PaymentReceiptsImported,
+			"customers_imported",        result.CustomersImported,
 			"updated",                   result.Updated,
 			"date_start",                dateStart,
 			"date_end",                  dateEnd,
@@ -511,12 +528,15 @@ func (h *SiigoHandler) savePurchases(purchases []siigopkg.Purchase, dateStart, d
 			Number:                 pur.Number,
 			Date:                   pur.Date,
 			DueDate:                firstNonEmpty(pur.DueDate, firstPaymentDueDate(pur.Payments)),
-			ProviderIdentification: pur.Provider.Identification,
-			ProviderName:           firstNonEmpty(pur.Provider.Name, pur.Provider.CommercialName),
+			ProviderIdentification: pur.Supplier.Identification,
+			// The purchases list payload carries no supplier name — only the
+			// identification — so the name is resolved from the customers table
+			// on read rather than copied in here.
+			ProviderName:           "",
 			Total:                  pur.Total,
 			Balance:                pur.Balance,
 			Status:                 invoiceStatus(pur.Balance, pur.Total),
-			Category:               categorizePurchase(itemDescs, pur.Provider.Name),
+			Category:               categorizePurchase(itemDescs, ""),
 			Detail:                 pur.Name + ifNonEmpty(" · ", strings.Join(itemDescs, " | ")),
 			Installments:           paymentsToInstallments(pur.Payments),
 		}
@@ -689,7 +709,9 @@ func (h *SiigoHandler) savePaymentReceipts(receipts []siigopkg.PaymentReceipt, d
 			Date:         pr.Date,
 			Description:  pr.Name,
 			Reference:    pr.Name,
-			Category:     categorizePurchase(itemDescs, pr.Provider.Name),
+			// Same as purchases: the RP payload names no supplier, so the item
+			// descriptions are all categorisation has to work with.
+			Category:     categorizePurchase(itemDescs, ""),
 			Type:         domain.TypeEgreso,
 			Amount:       paymentReceiptTotal(pr.Total, pr.Items),
 			Status:       domain.StatusCompleted,
@@ -711,6 +733,274 @@ func (h *SiigoHandler) savePaymentReceipts(receipts []siigopkg.PaymentReceipt, d
 		mu.Unlock()
 	}
 	return nil
+}
+
+// ── customers (terceros) ──────────────────────────────────────────────────────
+
+// SyncCustomers refreshes only the Clientes module, so the Clientes view can
+// update its own data without waiting on a full four-document sync.
+//
+// POST /api/v1/siigo/sync/customers
+func (h *SiigoHandler) SyncCustomers(w http.ResponseWriter, r *http.Request) {
+	client, err := h.ensureClient()
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+
+	result := &domain.SiigoSyncResult{}
+	var mu sync.Mutex
+	sem := make(chan struct{}, siigoMaxConcurrent)
+	startedAt := time.Now()
+
+	pageErrs, err := h.syncCustomers(client, result, &mu, sem)
+	if err != nil {
+		slog.Error("siigo_customer_sync_failed", "error", err)
+		jsonError(w, "Error al guardar los clientes sincronizados", http.StatusInternalServerError)
+		return
+	}
+	h.sweepCustomers(startedAt, pageErrs == 0)
+
+	actor, initial := actorFrom(r)
+	h.store.AddActivityLog(domain.ActivityLog{ //nolint
+		UserName: actor, Initial: initial,
+		Action: fmt.Sprintf("Sync Clientes (+%d nuevos, ~%d actualizados)",
+			result.CustomersImported, result.Updated),
+		Module: "Clientes", Color: "bg-green-500",
+	})
+	slog.Info("siigo_customer_sync_done",
+		"actor",     actor,
+		"imported",  result.CustomersImported,
+		"updated",   result.Updated,
+		"errors",    len(result.Errors),
+	)
+
+	jsonOK(w, domain.SiigoCustomerSyncResult{
+		Imported: result.CustomersImported,
+		Updated:  result.Updated,
+		Total:    result.CustomersImported + result.Updated,
+		Errors:   result.Errors,
+	})
+}
+
+// syncCustomers walks the whole customer list. There is no date window to
+// narrow it — Siigo's updated_start filter returns nothing for this endpoint
+// because most records carry no last_updated — so page 1 sizes the run and the
+// rest are fetched in parallel under the shared semaphore.
+//
+// It returns how many customer pages were given up on, so the caller can tell a
+// complete pass (safe to sweep) from a partial one, plus any fatal DB error.
+func (h *SiigoHandler) syncCustomers(client *siigopkg.Client, result *domain.SiigoSyncResult, mu *sync.Mutex, sem chan struct{}) (int, error) {
+	var pageErrs atomic.Int64
+	recordPageErr := func(page int, err error) {
+		pageErrs.Add(1)
+		mu.Lock()
+		result.Errors = append(result.Errors, siigoPageErr("Clientes", page, err))
+		mu.Unlock()
+	}
+
+	var page1 *siigopkg.CustomerListResponse
+	if err := withRetry(siigoRetryAttempts, func() error {
+		sem <- struct{}{}
+		defer func() { <-sem }()
+		var e error
+		page1, e = client.GetCustomers(1, siigoPageSize)
+		return e
+	}); err != nil {
+		recordPageErr(1, err)
+		return int(pageErrs.Load()), nil
+	}
+	if err := h.saveCustomers(page1.Results, result, mu); err != nil {
+		return int(pageErrs.Load()), err
+	}
+
+	totalPages := (page1.Pagination.TotalResults + siigoPageSize - 1) / siigoPageSize
+	if totalPages <= 1 {
+		return int(pageErrs.Load()), nil
+	}
+
+	dbErrs := make([]error, totalPages-1)
+	var wg sync.WaitGroup
+	for page := 2; page <= totalPages; page++ {
+		wg.Add(1)
+		go func(page int) {
+			defer wg.Done()
+			var resp *siigopkg.CustomerListResponse
+			if err := withRetry(siigoRetryAttempts, func() error {
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				var e error
+				resp, e = client.GetCustomers(page, siigoPageSize)
+				return e
+			}); err != nil {
+				recordPageErr(page, err)
+				return
+			}
+			dbErrs[page-2] = h.saveCustomers(resp.Results, result, mu)
+		}(page)
+	}
+	wg.Wait()
+	return int(pageErrs.Load()), errors.Join(dbErrs...)
+}
+
+func (h *SiigoHandler) saveCustomers(customers []siigopkg.Customer, result *domain.SiigoSyncResult, mu *sync.Mutex) error {
+	for _, c := range customers {
+		// Identification is what makes a third party addressable — and what the
+		// upsert keys on. A record without one would collide with every other
+		// blank on the same branch, so it is skipped rather than merged.
+		if strings.TrimSpace(c.Identification) == "" {
+			continue
+		}
+		record := &domain.Customer{
+			ExternalID:     fmt.Sprintf("siigo-cus-%s", c.ID),
+			SiigoID:        c.ID,
+			Type:           domain.CustomerTypeFromSiigo(c.Type),
+			PersonType:     c.PersonType,
+			IDType:         c.IDType.Name,
+			Identification: strings.TrimSpace(c.Identification),
+			CheckDigit:     derefString(c.CheckDigit),
+			BranchOffice:   c.BranchOffice,
+			Name:           customerName(c),
+			CommercialName: strings.TrimSpace(derefString(c.CommercialName)),
+			Active:         c.Active,
+			VatResponsible: c.VatResponsible,
+			Address:        strings.TrimSpace(c.Address.Address),
+			City:           c.Address.City.CityName,
+			State:          c.Address.City.StateName,
+			Country:        c.Address.City.CountryName,
+			PostalCode:     c.Address.PostalCode,
+			Email:          primaryEmail(c.Contacts),
+			Phone:          primaryPhone(c),
+			Phones:         mapPhones(c.Phones),
+			Contacts:       mapContacts(c.Contacts),
+			SiigoCreatedAt: c.Metadata.Created,
+			SiigoUpdatedAt: c.Metadata.LastUpdated,
+		}
+		inserted, err := h.store.UpsertCustomer(record)
+		if err != nil {
+			return fmt.Errorf("error al guardar cliente %s: %w", c.ID, err)
+		}
+		mu.Lock()
+		if inserted {
+			result.CustomersImported++
+		} else {
+			result.Updated++
+		}
+		mu.Unlock()
+	}
+	return nil
+}
+
+// sweepCustomers deactivates rows the run never touched — a third party deleted
+// in Siigo, or one whose identification was corrected there. It only runs when
+// the customer pass itself was clean: with a failed page the missing rows are an
+// artefact of the failure, not of Siigo, and deactivating them would be wrong.
+func (h *SiigoHandler) sweepCustomers(startedAt time.Time, clean bool) {
+	if !clean {
+		return
+	}
+	n, err := h.store.DeactivateCustomersNotSyncedSince(startedAt)
+	if err != nil {
+		slog.Warn("siigo_customer_sweep_failed", "error", err)
+		return
+	}
+	if n > 0 {
+		slog.Info("siigo_customers_deactivated", "count", n)
+	}
+}
+
+// customerName rebuilds a display name from Siigo's name array: one element for
+// a company, two (given, family) for a person.
+func customerName(c siigopkg.Customer) string {
+	parts := make([]string, 0, len(c.Name))
+	for _, p := range c.Name {
+		if s := strings.TrimSpace(p); s != "" {
+			parts = append(parts, s)
+		}
+	}
+	if len(parts) == 0 {
+		return strings.TrimSpace(derefString(c.CommercialName))
+	}
+	return strings.Join(parts, " ")
+}
+
+func derefString(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+func primaryEmail(contacts []siigopkg.CustomerContact) string {
+	for _, ct := range contacts {
+		if e := strings.TrimSpace(ct.Email); e != "" {
+			return e
+		}
+	}
+	return ""
+}
+
+// primaryPhone prefers the third party's own phone list and falls back to the
+// first contact's. Siigo pads empty numbers with zeros ("0000000"), which are
+// no more useful than a blank, so they are dropped.
+func primaryPhone(c siigopkg.Customer) string {
+	for _, p := range c.Phones {
+		if s := formatPhone(p); s != "" {
+			return s
+		}
+	}
+	for _, ct := range c.Contacts {
+		if s := formatPhone(ct.Phone); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+func formatPhone(p siigopkg.CustomerPhone) string {
+	num := strings.TrimSpace(p.Number)
+	if num == "" || strings.Trim(num, "0") == "" {
+		return ""
+	}
+	if ext := strings.TrimSpace(p.Extension); ext != "" {
+		return num + " ext. " + ext
+	}
+	return num
+}
+
+func mapPhones(phones []siigopkg.CustomerPhone) []domain.CustomerPhone {
+	out := make([]domain.CustomerPhone, 0, len(phones))
+	for _, p := range phones {
+		if formatPhone(p) == "" {
+			continue
+		}
+		out = append(out, domain.CustomerPhone{
+			Indicative: strings.TrimSpace(p.Indicative),
+			Number:     strings.TrimSpace(p.Number),
+			Extension:  strings.TrimSpace(p.Extension),
+		})
+	}
+	return out
+}
+
+func mapContacts(contacts []siigopkg.CustomerContact) []domain.CustomerContact {
+	out := make([]domain.CustomerContact, 0, len(contacts))
+	for _, ct := range contacts {
+		name := strings.TrimSpace(strings.TrimSpace(ct.FirstName) + " " + strings.TrimSpace(ct.LastName))
+		if name == "" && ct.Email == "" {
+			continue
+		}
+		out = append(out, domain.CustomerContact{
+			Name:  name,
+			Email: strings.TrimSpace(ct.Email),
+			Phone: domain.CustomerPhone{
+				Indicative: strings.TrimSpace(ct.Phone.Indicative),
+				Number:     strings.TrimSpace(ct.Phone.Number),
+				Extension:  strings.TrimSpace(ct.Phone.Extension),
+			},
+		})
+	}
+	return out
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────

@@ -146,6 +146,101 @@ type Purchase struct {
 	UpdatedAt              time.Time         `json:"updatedAt"`
 }
 
+// CustomerType mirrors Siigo's third-party classification. The Clientes module
+// shows Cliente by default; the other two are kept so the same synced data can
+// answer "who is this NIT?" for a purchase or a payment receipt.
+type CustomerType string
+
+const (
+	CustomerTypeCustomer CustomerType = "Cliente"
+	CustomerTypeSupplier CustomerType = "Proveedor"
+	CustomerTypeOther    CustomerType = "Otro"
+)
+
+// CustomerTypeFromSiigo maps Siigo's English type to the Spanish stored value.
+func CustomerTypeFromSiigo(t string) CustomerType {
+	switch t {
+	case "Customer":
+		return CustomerTypeCustomer
+	case "Supplier":
+		return CustomerTypeSupplier
+	default:
+		return CustomerTypeOther
+	}
+}
+
+type CustomerPhone struct {
+	Indicative string `json:"indicative,omitempty"`
+	Number     string `json:"number"`
+	Extension  string `json:"extension,omitempty"`
+}
+
+type CustomerContact struct {
+	Name  string        `json:"name"`
+	Email string        `json:"email,omitempty"`
+	Phone CustomerPhone `json:"phone"`
+}
+
+// Customer is a third party synced from Siigo. It is read-only in ArCa —
+// Siigo remains the system of record, and a sync overwrites local values.
+type Customer struct {
+	ID             string       `json:"id"`
+	ExternalID     string       `json:"externalId"`
+	SiigoID        string       `json:"siigoId"`
+	Type           CustomerType `json:"type"`
+	PersonType     string       `json:"personType"` // "Person" | "Company"
+	IDType         string       `json:"idType,omitempty"`
+	Identification string       `json:"identification"`
+	CheckDigit     string       `json:"checkDigit,omitempty"`
+	BranchOffice   int          `json:"branchOffice"`
+	Name           string       `json:"name"`
+	CommercialName string       `json:"commercialName,omitempty"`
+	Active         bool         `json:"active"`
+	VatResponsible bool         `json:"vatResponsible"`
+	Address        string       `json:"address,omitempty"`
+	City           string       `json:"city,omitempty"`
+	State          string       `json:"state,omitempty"`
+	Country        string       `json:"country,omitempty"`
+	PostalCode     string       `json:"postalCode,omitempty"`
+	// Email and Phone are the primary contact, lifted out of the lists below so
+	// the table can show them without the client digging through the payload.
+	Email    string            `json:"email,omitempty"`
+	Phone    string            `json:"phone,omitempty"`
+	Phones   []CustomerPhone   `json:"phones,omitempty"`
+	Contacts []CustomerContact `json:"contacts,omitempty"`
+	// SiigoCreatedAt / SiigoUpdatedAt are Siigo's own naive timestamps, kept as
+	// text because the payload carries no timezone.
+	SiigoCreatedAt string `json:"siigoCreatedAt,omitempty"`
+	SiigoUpdatedAt string `json:"siigoUpdatedAt,omitempty"`
+
+	// Portfolio figures, computed from invoices at read time — never persisted.
+	InvoiceCount    int     `json:"invoiceCount"`
+	TotalInvoiced   float64 `json:"totalInvoiced"`
+	PendingBalance  float64 `json:"pendingBalance"`
+	LastInvoiceDate string  `json:"lastInvoiceDate,omitempty"`
+
+	SyncedAt  time.Time `json:"syncedAt"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+// CustomerAggregate is the invoice roll-up for one customer identification.
+type CustomerAggregate struct {
+	Identification  string
+	InvoiceCount    int
+	TotalInvoiced   float64
+	PendingBalance  float64
+	LastInvoiceDate string
+}
+
+type CustomerListResponse struct {
+	Data       []Customer `json:"data"`
+	Total      int        `json:"total"`
+	Page       int        `json:"page"`
+	Limit      int        `json:"limit"`
+	TotalPages int        `json:"totalPages"`
+}
+
 type User struct {
 	ID           string     `json:"id"`
 	Name         string     `json:"name"`
@@ -382,8 +477,18 @@ type SiigoSyncResult struct {
 	PurchasesImported       int           `json:"purchasesImported"`
 	VouchersImported        int           `json:"vouchersImported"`
 	PaymentReceiptsImported int           `json:"paymentReceiptsImported"`
+	CustomersImported       int           `json:"customersImported"`
 	Updated                 int           `json:"updated"`
 	Errors                  []string      `json:"errors,omitempty"`
+}
+
+// SiigoCustomerSyncResult is what the Clientes module's own sync returns. The
+// customer endpoint has no date window, so there is no range to report back.
+type SiigoCustomerSyncResult struct {
+	Imported int      `json:"imported"`
+	Updated  int      `json:"updated"`
+	Total    int      `json:"total"`
+	Errors   []string `json:"errors,omitempty"`
 }
 
 type ActivityLog struct {

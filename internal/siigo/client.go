@@ -29,6 +29,7 @@ const (
 	PurchasePath       = "/v1/purchases"
 	VoucherPath        = "/v1/vouchers"
 	PaymentReceiptPath = "/v1/payment-receipts"
+	CustomerPath       = "/v1/customers"
 )
 
 type Client struct {
@@ -202,6 +203,15 @@ func (c *Client) GetPaymentReceipts(dateStart, dateEnd string, page, pageSize in
 	path := fmt.Sprintf("%s?date_start=%s&date_end=%s&page=%d&page_size=%d",
 		PaymentReceiptPath, dateStart, dateEnd, page, pageSize)
 	var result PaymentReceiptListResponse
+	return &result, c.get(path, &result)
+}
+
+// GetCustomers lists third parties. Unlike the document endpoints this one has
+// no date window: Siigo's updated_start filter is unreliable here (most records
+// carry no last_updated at all), so every sync walks the full list.
+func (c *Client) GetCustomers(page, pageSize int) (*CustomerListResponse, error) {
+	path := fmt.Sprintf("%s?page=%d&page_size=%d", CustomerPath, page, pageSize)
+	var result CustomerListResponse
 	return &result, c.get(path, &result)
 }
 
