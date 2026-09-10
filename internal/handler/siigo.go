@@ -305,6 +305,18 @@ func (h *SiigoHandler) runSync(client *siigopkg.Client, mode domain.SiigoSyncMod
 	// without a second trip. Its page errors are counted separately: the sweep
 	// that deactivates vanished third parties must only fire when the customer
 	// pages all succeeded, regardless of how the document passes fared.
+	// Read credit notes before the document passes: an invoice's status depends
+	// on whether one annuls it, and the parallel passes would otherwise race.
+	// A failure here is recorded and the sync continues — invoices then keep
+	// their balance-derived status rather than the whole sync failing.
+	credited, err := h.creditedByInvoice(client)
+	if err != nil {
+		resultMu.Lock()
+		result.Errors = append(result.Errors, fmt.Sprintf("Notas Crédito (NC): %s", friendlySiigoErr(err)))
+		resultMu.Unlock()
+		slog.Warn("siigo_credit_notes_failed", "error", err)
+	}
+
 	var customerErrs atomic.Int64
 	syncCustomersPass := func() error {
 		n, err := h.syncCustomers(client, result, &resultMu, sem)
@@ -313,7 +325,7 @@ func (h *SiigoHandler) runSync(client *siigopkg.Client, mode domain.SiigoSyncMod
 	}
 
 	syncs := []func() error{
-		func() error { return h.syncInvoices(client, dateStart, dateEnd, result, &resultMu, sem) },
+		func() error { return h.syncInvoices(client, dateStart, dateEnd, credited, result, &resultMu, sem) },
 		func() error { return h.syncPurchases(client, dateStart, dateEnd, result, &resultMu, sem) },
 		func() error { return h.syncVouchers(client, dateStart, dateEnd, result, &resultMu, sem) },
 		func() error { return h.syncPaymentReceipts(client, dateStart, dateEnd, result, &resultMu, sem) },
@@ -370,7 +382,7 @@ func (h *SiigoHandler) runSync(client *siigopkg.Client, mode domain.SiigoSyncMod
 	return result, nil
 }
 
-func (h *SiigoHandler) syncInvoices(client *siigopkg.Client, dateStart, dateEnd string, result *domain.SiigoSyncResult, mu *sync.Mutex, sem chan struct{}) error {
+func (h *SiigoHandler) syncInvoices(client *siigopkg.Client, dateStart, dateEnd string, credited map[string]float64, result *domain.SiigoSyncResult, mu *sync.Mutex, sem chan struct{}) error {
 	var page1 *siigopkg.InvoiceListResponse
 	if err := withRetry(siigoRetryAttempts, func() error {
 		sem <- struct{}{}
@@ -384,7 +396,7 @@ func (h *SiigoHandler) syncInvoices(client *siigopkg.Client, dateStart, dateEnd 
 		mu.Unlock()
 		return nil
 	}
-	if err := h.saveInvoices(page1.Results, dateStart, dateEnd, result, mu); err != nil {
+	if err := h.saveInvoices(page1.Results, dateStart, dateEnd, credited, result, mu); err != nil {
 		return err
 	}
 
@@ -412,14 +424,14 @@ func (h *SiigoHandler) syncInvoices(client *siigopkg.Client, dateStart, dateEnd 
 				mu.Unlock()
 				return
 			}
-			dbErrs[page-2] = h.saveInvoices(resp.Results, dateStart, dateEnd, result, mu)
+			dbErrs[page-2] = h.saveInvoices(resp.Results, dateStart, dateEnd, credited, result, mu)
 		}(page)
 	}
 	wg.Wait()
 	return errors.Join(dbErrs...)
 }
 
-func (h *SiigoHandler) saveInvoices(invoices []siigopkg.Invoice, dateStart, dateEnd string, result *domain.SiigoSyncResult, mu *sync.Mutex) error {
+func (h *SiigoHandler) saveInvoices(invoices []siigopkg.Invoice, dateStart, dateEnd string, credited map[string]float64, result *domain.SiigoSyncResult, mu *sync.Mutex) error {
 	for _, inv := range invoices {
 		if inv.Date < dateStart || inv.Date > dateEnd {
 			continue
@@ -444,7 +456,7 @@ func (h *SiigoHandler) saveInvoices(invoices []siigopkg.Invoice, dateStart, date
 			CustomerName:           "",
 			Total:                  inv.Total,
 			Balance:                inv.Balance,
-			Status:                 invoiceStatus(inv.Balance, inv.Total),
+			Status:                 invoiceStatusWithCredits(inv.Balance, inv.Total, credited[inv.ID]),
 			Category:               categorizeInvoice(itemDescs, ""),
 			Detail:                 inv.Name + ifNonEmpty(" · ", strings.Join(itemDescs, " | ")),
 			Installments:           paymentsToInstallments(inv.Payments),
@@ -629,7 +641,7 @@ func (h *SiigoHandler) saveVouchers(vouchers []siigopkg.Voucher, dateStart, date
 			Category:     categorizeInvoice(itemDescs, ""),
 			Type:         domain.TypeIngreso,
 			Amount:       voucherTotal(v),
-			Status:       domain.StatusCompleted,
+			Status:       receiptStatus(len(v.Items), v.Payment.Value),
 			Detail:       v.Name + ifNonEmpty(" · ", strings.Join(itemDescs, " | ")),
 			Source:       domain.SourceSIIGO,
 			ExternalID:   fmt.Sprintf("siigo-rc-%s", v.ID),
@@ -721,8 +733,8 @@ func (h *SiigoHandler) savePaymentReceipts(receipts []siigopkg.PaymentReceipt, d
 			// descriptions are all categorisation has to work with.
 			Category:     categorizePurchase(itemDescs, ""),
 			Type:         domain.TypeEgreso,
-			Amount:       paymentReceiptTotal(pr.Total, pr.Items),
-			Status:       domain.StatusCompleted,
+			Amount:       paymentReceiptTotal(0, pr.Items),
+			Status:       receiptStatus(len(pr.Items), pr.Payment.Value),
 			Detail:       pr.Name + ifNonEmpty(" · ", strings.Join(itemDescs, " | ")),
 			Source:       domain.SourceSIIGO,
 			ExternalID:   fmt.Sprintf("siigo-rp-%s", pr.ID),
@@ -744,6 +756,43 @@ func (h *SiigoHandler) savePaymentReceipts(receipts []siigopkg.PaymentReceipt, d
 		mu.Unlock()
 	}
 	return nil
+}
+
+// creditedByInvoice returns, per invoice id, the total credited against it by
+// credit notes. An invoice covered in full is annulled: Colombian electronic
+// invoices cannot be deleted, so a credit note is how they are voided, and the
+// invoice itself gives no sign of it — its stamp still reads "Accepted" and its
+// balance simply drops to zero, which is exactly what a paid invoice looks like.
+//
+// Totals are summed rather than read from the DIAN reason code alone: several
+// partial notes can add up to a full annulment, and in this account three notes
+// filed under reason 1 (devolución) cover their invoice completely, which is an
+// annulment in everything but the code.
+func (h *SiigoHandler) creditedByInvoice(client *siigopkg.Client) (map[string]float64, error) {
+	credited := make(map[string]float64)
+
+	page1, err := client.GetCreditNotes(1, siigoPageSize)
+	if err != nil {
+		return nil, err
+	}
+	accumulate := func(notes []siigopkg.CreditNote) {
+		for _, nc := range notes {
+			if nc.Invoice.ID != "" {
+				credited[nc.Invoice.ID] += nc.Total
+			}
+		}
+	}
+	accumulate(page1.Results)
+
+	totalPages := (page1.Pagination.TotalResults + siigoPageSize - 1) / siigoPageSize
+	for page := 2; page <= totalPages; page++ {
+		resp, err := client.GetCreditNotes(page, siigoPageSize)
+		if err != nil {
+			return credited, err
+		}
+		accumulate(resp.Results)
+	}
+	return credited, nil
 }
 
 // ── customers (terceros) ──────────────────────────────────────────────────────
@@ -1040,9 +1089,14 @@ func voucherTotal(v siigopkg.Voucher) float64 {
 	return sum
 }
 
-// paymentReceiptTotal sums RP items whose account.movement is Credit, falling
-// back to the top-level total when none match. This is the original
-// voucherTotal logic, kept as-is pending a verified RP payload.
+// paymentReceiptTotal sums RP items whose account.movement is Credit.
+//
+// KNOWN WRONG, left unchanged deliberately. The RP payload has no "total" key —
+// the document value is payment.value, exactly as on a voucher — so the fallback
+// argument has always been zero and 565 receipts are stored at 0 despite
+// carrying a real payment (the largest is 203,197,666). Correcting it rewrites
+// the amount on hundreds of historical expenses, which is a decision to take
+// on its own rather than as a side effect of a status fix.
 func paymentReceiptTotal(total float64, items []siigopkg.PaymentReceiptItem) float64 {
 	var sum float64
 	for _, it := range items {
@@ -1085,6 +1139,35 @@ func ifNonEmpty(prefix, s string) string {
 		return ""
 	}
 	return prefix + s
+}
+
+// annulledReceipt reports whether Siigo has stripped a receipt to an empty
+// shell, which is what an annulment looks like on RC and RP: the items and the
+// payment are both removed and the document is left with no value. Without this
+// an annulled receipt lands as a 0.00 "Completado" movement — real money that
+// was never received or paid, sitting in the ledger as settled.
+func annulledReceipt(itemCount int, paymentValue float64) bool {
+	return itemCount == 0 && paymentValue == 0
+}
+
+// receiptStatus is the status of an RC or RP.
+func receiptStatus(itemCount int, paymentValue float64) domain.TransactionStatus {
+	if annulledReceipt(itemCount, paymentValue) {
+		return domain.StatusCancelled
+	}
+	return domain.StatusCompleted
+}
+
+// invoiceStatusWithCredits is invoiceStatus plus annulment: an invoice whose
+// credit notes cover its total is void, however its balance reads. The balance
+// of an annulled invoice is zero, so without this it would be indistinguishable
+// from one that was paid.
+func invoiceStatusWithCredits(balance, total, credited float64) domain.TransactionStatus {
+	// A cent of tolerance: these are summed decimals off a remote API.
+	if total > 0 && credited >= total-0.01 {
+		return domain.StatusCancelled
+	}
+	return invoiceStatus(balance, total)
 }
 
 func invoiceStatus(balance, total float64) domain.TransactionStatus {

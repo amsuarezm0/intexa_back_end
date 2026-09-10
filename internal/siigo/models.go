@@ -199,15 +199,17 @@ type PaymentReceiptListResponse struct {
 }
 
 type PaymentReceipt struct {
-	ID           string                 `json:"id"`
-	Prefix       string                 `json:"prefix"`
-	Number       int                    `json:"number"`
-	Name         string                 `json:"name"`
-	Date         string                 `json:"date"` // YYYY-MM-DD
-	Supplier     DocumentParty          `json:"supplier"`
-	Total        float64                `json:"total"`
-	Observations string                 `json:"observations"`
-	Items        []PaymentReceiptItem   `json:"items"`
+	ID     string        `json:"id"`
+	Prefix string        `json:"prefix"`
+	Number int           `json:"number"`
+	Name   string        `json:"name"`
+	Date   string        `json:"date"` // YYYY-MM-DD
+	Supplier DocumentParty `json:"supplier"`
+	// The RP payload has no "total" key; the document value lives in payment,
+	// the same shape a voucher uses.
+	Payment      VoucherPayment       `json:"payment"`
+	Observations string               `json:"observations"`
+	Items        []PaymentReceiptItem `json:"items"`
 }
 
 // PaymentReceiptItem keeps the pre-existing shape: unlike the RC payload, the
@@ -217,6 +219,35 @@ type PaymentReceiptItem struct {
 	Description string         `json:"description"`
 	Value       float64        `json:"value"`
 	Account     VoucherAccount `json:"account"`
+}
+
+// CreditNote (NC — nota crédito)
+//
+// A Colombian electronic invoice cannot be deleted once stamped; it is annulled
+// by issuing a credit note against it. The note carries the invoice it credits
+// and a DIAN reason code (2 = anulación, 1 = devolución), so this endpoint is
+// the only way to learn that an invoice is void — the invoice itself still
+// reports stamp.status "Accepted" and simply drops to a zero balance, which is
+// indistinguishable from being paid.
+
+type CreditNoteListResponse struct {
+	Pagination Pagination   `json:"pagination"`
+	Results    []CreditNote `json:"results"`
+}
+
+type CreditNote struct {
+	ID      string            `json:"id"`
+	Number  int               `json:"number"`
+	Name    string            `json:"name"`
+	Date    string            `json:"date"`
+	Invoice CreditNoteInvoice `json:"invoice"`
+	Reason  int               `json:"reason"`
+	Total   float64           `json:"total"`
+}
+
+type CreditNoteInvoice struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 // Customer (tercero)

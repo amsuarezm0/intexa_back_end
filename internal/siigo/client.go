@@ -30,6 +30,7 @@ const (
 	VoucherPath        = "/v1/vouchers"
 	PaymentReceiptPath = "/v1/payment-receipts"
 	CustomerPath       = "/v1/customers"
+	CreditNotePath     = "/v1/credit-notes"
 )
 
 type Client struct {
@@ -203,6 +204,14 @@ func (c *Client) GetPaymentReceipts(dateStart, dateEnd string, page, pageSize in
 	path := fmt.Sprintf("%s?date_start=%s&date_end=%s&page=%d&page_size=%d",
 		PaymentReceiptPath, dateStart, dateEnd, page, pageSize)
 	var result PaymentReceiptListResponse
+	return &result, c.get(path, &result)
+}
+
+// GetCreditNotes lists credit notes (NC). They are what annuls an electronic
+// invoice, so a sync reads them to learn which invoices are void.
+func (c *Client) GetCreditNotes(page, pageSize int) (*CreditNoteListResponse, error) {
+	path := fmt.Sprintf("%s?page=%d&page_size=%d", CreditNotePath, page, pageSize)
+	var result CreditNoteListResponse
 	return &result, c.get(path, &result)
 }
 
