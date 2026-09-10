@@ -438,11 +438,14 @@ func (h *SiigoHandler) saveInvoices(invoices []siigopkg.Invoice, dateStart, date
 			Date:                   inv.Date,
 			DueDate:                firstNonEmpty(inv.DueDate, firstPaymentDueDate(inv.Payments)),
 			CustomerIdentification: inv.Customer.Identification,
-			CustomerName:           firstNonEmpty(inv.Customer.Name, inv.Customer.CommercialName),
+			CustomerBranchOffice:   inv.Customer.BranchOffice,
+			CustomerSiigoID:        inv.Customer.ID,
+			// No name in the payload — resolved from the customers table on read.
+			CustomerName:           "",
 			Total:                  inv.Total,
 			Balance:                inv.Balance,
 			Status:                 invoiceStatus(inv.Balance, inv.Total),
-			Category:               categorizeInvoice(itemDescs, inv.Customer.Name),
+			Category:               categorizeInvoice(itemDescs, ""),
 			Detail:                 inv.Name + ifNonEmpty(" · ", strings.Join(itemDescs, " | ")),
 			Installments:           paymentsToInstallments(inv.Payments),
 		}
@@ -529,6 +532,8 @@ func (h *SiigoHandler) savePurchases(purchases []siigopkg.Purchase, dateStart, d
 			Date:                   pur.Date,
 			DueDate:                firstNonEmpty(pur.DueDate, firstPaymentDueDate(pur.Payments)),
 			ProviderIdentification: pur.Supplier.Identification,
+			ProviderBranchOffice:   pur.Supplier.BranchOffice,
+			ProviderSiigoID:        pur.Supplier.ID,
 			// The purchases list payload carries no supplier name — only the
 			// identification — so the name is resolved from the customers table
 			// on read rather than copied in here.
@@ -629,6 +634,9 @@ func (h *SiigoHandler) saveVouchers(vouchers []siigopkg.Voucher, dateStart, date
 			Source:       domain.SourceSIIGO,
 			ExternalID:   fmt.Sprintf("siigo-rc-%s", v.ID),
 			IsProjection: false,
+			CounterpartyIdentification: v.Customer.Identification,
+			CounterpartyBranchOffice:   v.Customer.BranchOffice,
+			CounterpartySiigoID:        v.Customer.ID,
 		}
 		inserted, err := h.store.ImportTransaction(t)
 		if err != nil {
@@ -719,6 +727,9 @@ func (h *SiigoHandler) savePaymentReceipts(receipts []siigopkg.PaymentReceipt, d
 			Source:       domain.SourceSIIGO,
 			ExternalID:   fmt.Sprintf("siigo-rp-%s", pr.ID),
 			IsProjection: false,
+			CounterpartyIdentification: pr.Supplier.Identification,
+			CounterpartyBranchOffice:   pr.Supplier.BranchOffice,
+			CounterpartySiigoID:        pr.Supplier.ID,
 		}
 		inserted, err := h.store.ImportTransaction(t)
 		if err != nil {

@@ -30,13 +30,21 @@ var _ repository.Store = (*Store)(nil)
 
 func bg() context.Context { return context.Background() }
 
+// transactionCols is the read shape of a transaction. Kept in one place because
+// half a dozen queries select it and the counterparty columns had to be added to
+// every one of them.
+const transactionCols = `
+	id, date::TEXT, description, category, type, amount, status,
+	COALESCE(reference,''), COALESCE(detail,''), source, COALESCE(external_id,''),
+	is_projection,
+	counterparty_identification, counterparty_branch_office, counterparty_siigo_id,
+	created_at, updated_at`
+
 // ── Transactions ──────────────────────────────────────────────────────────────
 
 func (s *Store) GetAllTransactions() ([]*domain.Transaction, error) {
 	rows, err := s.pool.Query(bg(), `
-		SELECT id, date::TEXT, description, category, type, amount, status,
-		       COALESCE(reference,''), COALESCE(detail,''), source, COALESCE(external_id,''),
-		       is_projection, created_at, updated_at
+		SELECT`+transactionCols+`
 		FROM   transactions
 		ORDER  BY created_at DESC`)
 	if err != nil {
@@ -48,9 +56,7 @@ func (s *Store) GetAllTransactions() ([]*domain.Transaction, error) {
 
 func (s *Store) GetTransactionByID(id string) (*domain.Transaction, bool, error) {
 	row := s.pool.QueryRow(bg(), `
-		SELECT id, date::TEXT, description, category, type, amount, status,
-		       COALESCE(reference,''), COALESCE(detail,''), source, COALESCE(external_id,''),
-		       is_projection, created_at, updated_at
+		SELECT`+transactionCols+`
 		FROM   transactions WHERE id = $1`, id)
 	t, err := scanTransaction(row)
 	if err == pgx.ErrNoRows {
@@ -101,14 +107,18 @@ func (s *Store) ImportTransaction(t *domain.Transaction) (bool, error) {
 	var inserted bool
 	err := s.pool.QueryRow(bg(), `
 		INSERT INTO transactions
-		  (id, date, description, category, type, amount, status, reference, detail, source, external_id, is_projection)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,NULLIF($8,''),$9,$10,NULLIF($11,''),$12)
+		  (id, date, description, category, type, amount, status, reference, detail, source, external_id, is_projection,
+		   counterparty_identification, counterparty_branch_office, counterparty_siigo_id)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,NULLIF($8,''),$9,$10,NULLIF($11,''),$12,$13,$14,$15)
 		ON CONFLICT (external_id) DO UPDATE
-		  SET date=$2, description=$3, category=$4, amount=$6, status=$7, reference=NULLIF($8,''), detail=$9, updated_at=now()
+		  SET date=$2, description=$3, category=$4, amount=$6, status=$7, reference=NULLIF($8,''), detail=$9,
+		      counterparty_identification=$13, counterparty_branch_office=$14, counterparty_siigo_id=$15,
+		      updated_at=now()
 		RETURNING id, (xmax = 0) AS inserted, created_at, updated_at`,
 		newID, parseDate(t.Date), t.Description, t.Category, string(t.Type),
 		t.Amount, string(t.Status), t.Reference, t.Detail, string(t.Source),
 		t.ExternalID, t.IsProjection,
+		t.CounterpartyIdentification, t.CounterpartyBranchOffice, t.CounterpartySiigoID,
 	).Scan(&actualID, &inserted, &t.CreatedAt, &t.UpdatedAt)
 	t.ID = actualID
 	return inserted, err
@@ -218,9 +228,7 @@ func (s *Store) GetDailyTotals(from, to time.Time) ([]domain.DailyTotal, error) 
 
 func (s *Store) GetPendingTransactions() ([]*domain.Transaction, error) {
 	rows, err := s.pool.Query(bg(), `
-		SELECT id, date::TEXT, description, category, type, amount, status,
-		       COALESCE(reference,''), COALESCE(detail,''), source, COALESCE(external_id,''),
-		       is_projection, created_at, updated_at
+		SELECT`+transactionCols+`
 		FROM   transactions
 		WHERE  status='Pendiente' AND is_projection=false
 		ORDER  BY date ASC`)
@@ -233,9 +241,7 @@ func (s *Store) GetPendingTransactions() ([]*domain.Transaction, error) {
 
 func (s *Store) GetPendingProjections(horizon time.Time) ([]*domain.Transaction, error) {
 	rows, err := s.pool.Query(bg(), `
-		SELECT id, date::TEXT, description, category, type, amount, status,
-		       COALESCE(reference,''), COALESCE(detail,''), source, COALESCE(external_id,''),
-		       is_projection, created_at, updated_at
+		SELECT`+transactionCols+`
 		FROM   transactions
 		WHERE  is_projection=true AND status != 'Anulado' AND date <= $1
 		ORDER  BY date ASC`, horizon)
@@ -813,7 +819,7 @@ func (s *Store) SetBankBalance(b domain.BankBalance) error {
 const invoiceCols = `
 	id, external_id, source, is_projection,
 	COALESCE(reference,''), COALESCE(prefix,''), COALESCE(number,0), date::TEXT, COALESCE(due_date::TEXT,''),
-	COALESCE(customer_identification,''), COALESCE(customer_name,''),
+	COALESCE(customer_identification,''), customer_branch_office, customer_siigo_id, COALESCE(customer_name,''),
 	amount, balance, status, category, COALESCE(detail,''),
 	COALESCE(installments,'[]'::jsonb),
 	synced_at, created_at, updated_at`
@@ -868,13 +874,15 @@ func (s *Store) UpsertInvoice(inv *domain.Invoice) (bool, error) {
 	err := s.pool.QueryRow(bg(), `
 		INSERT INTO invoices
 		  (id, external_id, source, is_projection, reference, prefix, number, date, due_date,
-		   customer_identification, customer_name, amount, balance, status, category, detail, description, installments, synced_at)
-		VALUES ($1,$2,$3,$4,NULLIF($5,''),$6,$7,$8,$9,NULLIF($10,''),NULLIF($11,''),$12,$13,$14,$15,$16,NULLIF($5,''),$17,now())
+		   customer_identification, customer_name, amount, balance, status, category, detail, description, installments,
+		   customer_branch_office, customer_siigo_id, synced_at)
+		VALUES ($1,$2,$3,$4,NULLIF($5,''),$6,$7,$8,$9,NULLIF($10,''),NULLIF($11,''),$12,$13,$14,$15,$16,NULLIF($5,''),$17,$18,$19,now())
 		ON CONFLICT (external_id) DO UPDATE
 		  SET reference=NULLIF($5,''), date=$8, due_date=$9,
 		      customer_identification=NULLIF($10,''), customer_name=NULLIF($11,''),
 		      amount=$12, balance=$13, status=$14, category=$15, detail=$16,
 		      description=NULLIF($5,''), installments=$17,
+		      customer_branch_office=$18, customer_siigo_id=$19,
 		      synced_at=now(), updated_at=now()
 		RETURNING id, (xmax = 0) AS inserted, created_at, updated_at, synced_at`,
 		newID, inv.ExternalID, inv.Source, inv.IsProjection,
@@ -882,6 +890,7 @@ func (s *Store) UpsertInvoice(inv *domain.Invoice) (bool, error) {
 		inv.CustomerIdentification, inv.CustomerName,
 		inv.Total, inv.Balance, string(inv.Status), inv.Category, inv.Detail,
 		installmentsJSON(inv.Installments),
+		inv.CustomerBranchOffice, inv.CustomerSiigoID,
 	).Scan(&actualID, &inserted, &inv.CreatedAt, &inv.UpdatedAt, &inv.SyncedAt)
 	inv.ID = actualID
 	return inserted, err
@@ -892,7 +901,7 @@ func (s *Store) UpsertInvoice(inv *domain.Invoice) (bool, error) {
 const purchaseCols = `
 	id, external_id, source, is_projection,
 	COALESCE(reference,''), COALESCE(prefix,''), COALESCE(number,0), date::TEXT, COALESCE(due_date::TEXT,''),
-	COALESCE(provider_identification,''), COALESCE(provider_name,''),
+	COALESCE(provider_identification,''), provider_branch_office, provider_siigo_id, COALESCE(provider_name,''),
 	amount, balance, status, category, COALESCE(detail,''),
 	COALESCE(installments,'[]'::jsonb),
 	synced_at, created_at, updated_at`
@@ -947,13 +956,15 @@ func (s *Store) UpsertPurchase(pur *domain.Purchase) (bool, error) {
 	err := s.pool.QueryRow(bg(), `
 		INSERT INTO purchases
 		  (id, external_id, source, is_projection, reference, prefix, number, date, due_date,
-		   provider_identification, provider_name, amount, balance, status, category, detail, description, installments, synced_at)
-		VALUES ($1,$2,$3,$4,NULLIF($5,''),$6,$7,$8,$9,NULLIF($10,''),NULLIF($11,''),$12,$13,$14,$15,$16,NULLIF($5,''),$17,now())
+		   provider_identification, provider_name, amount, balance, status, category, detail, description, installments,
+		   provider_branch_office, provider_siigo_id, synced_at)
+		VALUES ($1,$2,$3,$4,NULLIF($5,''),$6,$7,$8,$9,NULLIF($10,''),NULLIF($11,''),$12,$13,$14,$15,$16,NULLIF($5,''),$17,$18,$19,now())
 		ON CONFLICT (external_id) DO UPDATE
 		  SET reference=NULLIF($5,''), date=$8, due_date=$9,
 		      provider_identification=NULLIF($10,''), provider_name=NULLIF($11,''),
 		      amount=$12, balance=$13, status=$14, category=$15, detail=$16,
 		      description=NULLIF($5,''), installments=$17,
+		      provider_branch_office=$18, provider_siigo_id=$19,
 		      synced_at=now(), updated_at=now()
 		RETURNING id, (xmax = 0) AS inserted, created_at, updated_at, synced_at`,
 		newID, pur.ExternalID, pur.Source, pur.IsProjection,
@@ -961,6 +972,7 @@ func (s *Store) UpsertPurchase(pur *domain.Purchase) (bool, error) {
 		pur.ProviderIdentification, pur.ProviderName,
 		pur.Total, pur.Balance, string(pur.Status), pur.Category, pur.Detail,
 		installmentsJSON(pur.Installments),
+		pur.ProviderBranchOffice, pur.ProviderSiigoID,
 	).Scan(&actualID, &inserted, &pur.CreatedAt, &pur.UpdatedAt, &pur.SyncedAt)
 	pur.ID = actualID
 	return inserted, err
@@ -991,6 +1003,7 @@ func scanTransaction(row scanner) (*domain.Transaction, error) {
 	err := row.Scan(&t.ID, &t.Date, &t.Description, &t.Category,
 		&txType, &t.Amount, &txStatus, &t.Reference, &t.Detail,
 		&txSource, &t.ExternalID, &t.IsProjection,
+		&t.CounterpartyIdentification, &t.CounterpartyBranchOffice, &t.CounterpartySiigoID,
 		&t.CreatedAt, &t.UpdatedAt)
 	if err != nil {
 		return nil, err
@@ -1032,7 +1045,7 @@ func scanInvoice(row scanner) (*domain.Invoice, error) {
 	err := row.Scan(
 		&inv.ID, &inv.ExternalID, &inv.Source, &inv.IsProjection,
 		&inv.Reference, &inv.Prefix, &inv.Number, &inv.Date, &inv.DueDate,
-		&inv.CustomerIdentification, &inv.CustomerName,
+		&inv.CustomerIdentification, &inv.CustomerBranchOffice, &inv.CustomerSiigoID, &inv.CustomerName,
 		&inv.Total, &inv.Balance, &status, &inv.Category, &inv.Detail,
 		&installments,
 		&inv.SyncedAt, &inv.CreatedAt, &inv.UpdatedAt,
@@ -1066,7 +1079,7 @@ func scanPurchase(row scanner) (*domain.Purchase, error) {
 	err := row.Scan(
 		&pur.ID, &pur.ExternalID, &pur.Source, &pur.IsProjection,
 		&pur.Reference, &pur.Prefix, &pur.Number, &pur.Date, &pur.DueDate,
-		&pur.ProviderIdentification, &pur.ProviderName,
+		&pur.ProviderIdentification, &pur.ProviderBranchOffice, &pur.ProviderSiigoID, &pur.ProviderName,
 		&pur.Total, &pur.Balance, &status, &pur.Category, &pur.Detail,
 		&installments,
 		&pur.SyncedAt, &pur.CreatedAt, &pur.UpdatedAt,
@@ -1192,6 +1205,42 @@ func (s *Store) GetCustomerAggregates() (map[string]domain.CustomerAggregate, er
 	return out, rows.Err()
 }
 
+// GetThirdPartyDirectory returns every synced third party keyed by
+// identification+branch office, for resolving the counterparty of a batch of
+// documents in one query instead of one lookup per row.
+//
+// Each third party is also indexed under its bare identification, so a document
+// whose branch office we never captured (anything synced before the branch
+// column existed) still resolves to the head office rather than showing nothing.
+func (s *Store) GetThirdPartyDirectory() (map[string]domain.ThirdParty, error) {
+	rows, err := s.pool.Query(bg(), `
+		SELECT id, identification, branch_office, siigo_id, name, commercial_name, type
+		FROM   customers
+		ORDER  BY branch_office`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make(map[string]domain.ThirdParty)
+	for rows.Next() {
+		var tp domain.ThirdParty
+		var cType string
+		if err := rows.Scan(&tp.CustomerID, &tp.Identification, &tp.BranchOffice,
+			&tp.SiigoID, &tp.Name, &tp.CommercialName, &cType); err != nil {
+			return nil, err
+		}
+		tp.Type = domain.CustomerType(cType)
+		out[domain.ThirdPartyKey(tp.Identification, tp.BranchOffice)] = tp
+		// Ordered by branch office, so the lowest (the head office) wins the
+		// bare-identification slot and later branches do not overwrite it.
+		if _, seen := out[tp.Identification]; !seen {
+			out[tp.Identification] = tp
+		}
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) GetInvoicesByCustomer(identification string) ([]*domain.Invoice, error) {
 	rows, err := s.pool.Query(bg(),
 		`SELECT`+invoiceCols+` FROM invoices WHERE customer_identification=$1 ORDER BY date DESC`,
@@ -1252,9 +1301,7 @@ func jsonOrEmptyArray(v any) string {
 
 func (s *Store) GetPeriodData(from, to time.Time) (*domain.PeriodData, error) {
 	txRows, err := s.pool.Query(bg(), `
-		SELECT id, date::TEXT, description, category, type, amount, status,
-		       COALESCE(reference,''), COALESCE(detail,''), source, COALESCE(external_id,''),
-		       is_projection, created_at, updated_at
+		SELECT`+transactionCols+`
 		FROM   transactions
 		WHERE  date >= $1 AND date <= $2
 		ORDER  BY date DESC`, from, to)
@@ -1325,8 +1372,10 @@ func (s *Store) Search(reference string) ([]domain.SearchDocument, error) {
 
 	// Every branch returns the same column shape so it scans into one struct.
 	// Columns a table doesn't have are filled with blanks/zeros: transactions
-	// (RC/RP) have no due date, counterparty, balance, prefix/number or
-	// synced_at; invoices/purchases have no type.
+	// (RC/RP) have no due date, balance, prefix/number or synced_at;
+	// invoices/purchases have no type. The counterparty *name* is left blank
+	// everywhere on purpose — no document table stores it; the handler fills it
+	// in from the customers directory.
 	var sql string
 	switch table {
 	case "invoices":
@@ -1349,7 +1398,7 @@ func (s *Store) Search(reference string) ([]domain.SearchDocument, error) {
 		sql = `SELECT id, COALESCE(reference,''), date::TEXT, '' AS due_date,
 		              COALESCE(description,''), COALESCE(detail,''), category, type,
 		              amount, 0::numeric AS balance, status, '' AS counterparty,
-		              '' AS counterparty_id, source, '' AS prefix,
+		              counterparty_identification, source, '' AS prefix,
 		              0 AS number, is_projection, COALESCE(external_id,''),
 		              '' AS synced_at, created_at::TEXT, updated_at::TEXT
 		       FROM transactions WHERE reference ILIKE $1 ORDER BY date DESC LIMIT 50`

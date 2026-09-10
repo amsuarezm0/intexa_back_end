@@ -1,6 +1,9 @@
 package domain
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 type TransactionType string
 type TransactionStatus string
@@ -38,8 +41,14 @@ type Transaction struct {
 	Source       TransactionSource `json:"source"`
 	ExternalID   string            `json:"externalId,omitempty"`
 	IsProjection bool              `json:"isProjection"`
-	CreatedAt    time.Time         `json:"createdAt"`
-	UpdatedAt    time.Time         `json:"updatedAt"`
+	// Counterparty of a synced document: the client of an RC, the supplier of
+	// an RP. Empty on manual movements and projections.
+	CounterpartyIdentification string      `json:"counterpartyIdentification,omitempty"`
+	CounterpartyBranchOffice   int         `json:"counterpartyBranchOffice,omitempty"`
+	CounterpartySiigoID        string      `json:"counterpartySiigoId,omitempty"`
+	ThirdParty                 *ThirdParty `json:"thirdParty,omitempty"` // computed, not persisted
+	CreatedAt                  time.Time   `json:"createdAt"`
+	UpdatedAt                  time.Time   `json:"updatedAt"`
 }
 
 // Installment is one scheduled payment of an invoice/purchase (from Siigo's
@@ -98,6 +107,31 @@ func PendingInstallments(total, balance float64, schedule []Installment, fallbac
 	return out
 }
 
+// ThirdParty is a document's counterparty, resolved against the customers
+// table at read time. Siigo's document payloads carry only the key — no name —
+// so Name and friends are filled in from the synced third party and are never
+// persisted alongside the document: a client renamed in Siigo shows its new
+// name everywhere after the next sync, with no stale copies to chase.
+//
+// Name is empty when the third party has not been synced yet (or no longer
+// exists in Siigo); the identification is still shown so the row stays useful.
+type ThirdParty struct {
+	// CustomerID is customers.id — what the UI links to. Empty when unresolved.
+	CustomerID     string       `json:"customerId,omitempty"`
+	Identification string       `json:"identification,omitempty"`
+	BranchOffice   int          `json:"branchOffice,omitempty"`
+	SiigoID        string       `json:"siigoId,omitempty"`
+	Name           string       `json:"name,omitempty"`
+	CommercialName string       `json:"commercialName,omitempty"`
+	Type           CustomerType `json:"type,omitempty"`
+}
+
+// ThirdPartyKey is the identity of a third party: the same NIT appears once per
+// branch office, so both parts are needed to tell branches apart.
+func ThirdPartyKey(identification string, branchOffice int) string {
+	return fmt.Sprintf("%s#%d", identification, branchOffice)
+}
+
 type Invoice struct {
 	ID                     string            `json:"id"`
 	ExternalID             string            `json:"externalId"`
@@ -109,6 +143,8 @@ type Invoice struct {
 	Date                   string            `json:"date"`
 	DueDate                string            `json:"dueDate,omitempty"`
 	CustomerIdentification string            `json:"customerIdentification,omitempty"`
+	CustomerBranchOffice   int               `json:"customerBranchOffice,omitempty"`
+	CustomerSiigoID        string            `json:"customerSiigoId,omitempty"`
 	CustomerName           string            `json:"customerName,omitempty"`
 	Total                  float64           `json:"total"`
 	Balance                float64           `json:"balance"`
@@ -117,6 +153,7 @@ type Invoice struct {
 	Detail                 string            `json:"detail,omitempty"`
 	Installments           []Installment     `json:"installments,omitempty"`
 	PendingInstallments    []Installment     `json:"pendingInstallments,omitempty"` // computed, not persisted
+	ThirdParty             *ThirdParty       `json:"thirdParty,omitempty"`          // computed, not persisted
 	SyncedAt               time.Time         `json:"syncedAt"`
 	CreatedAt              time.Time         `json:"createdAt"`
 	UpdatedAt              time.Time         `json:"updatedAt"`
@@ -133,6 +170,8 @@ type Purchase struct {
 	Date                   string            `json:"date"`
 	DueDate                string            `json:"dueDate,omitempty"`
 	ProviderIdentification string            `json:"providerIdentification,omitempty"`
+	ProviderBranchOffice   int               `json:"providerBranchOffice,omitempty"`
+	ProviderSiigoID        string            `json:"providerSiigoId,omitempty"`
 	ProviderName           string            `json:"providerName,omitempty"`
 	Total                  float64           `json:"total"`
 	Balance                float64           `json:"balance"`
@@ -141,6 +180,7 @@ type Purchase struct {
 	Detail                 string            `json:"detail,omitempty"`
 	Installments           []Installment     `json:"installments,omitempty"`
 	PendingInstallments    []Installment     `json:"pendingInstallments,omitempty"` // computed, not persisted
+	ThirdParty             *ThirdParty       `json:"thirdParty,omitempty"`          // computed, not persisted
 	SyncedAt               time.Time         `json:"syncedAt"`
 	CreatedAt              time.Time         `json:"createdAt"`
 	UpdatedAt              time.Time         `json:"updatedAt"`

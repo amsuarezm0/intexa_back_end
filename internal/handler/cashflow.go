@@ -237,5 +237,11 @@ func (h *CashFlowHandler) GetPeriodData(w http.ResponseWriter, r *http.Request) 
 			pur.PendingInstallments = domain.PendingInstallments(pur.Total, pur.Balance, pur.Installments, firstNonEmpty(pur.DueDate, pur.Date))
 		}
 	}
+	// Name the counterparty on every document in the period, so the cash-flow
+	// drilldown says who a figure belongs to rather than just its reference.
+	dir := thirdPartyDirectory(h.store)
+	attachToInvoices(dir, data.Invoices)
+	attachToPurchases(dir, data.Purchases)
+	attachToTransactionPtrs(dir, data.Transactions)
 	jsonOK(w, data)
 }

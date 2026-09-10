@@ -98,6 +98,9 @@ type Store interface {
 	// GetCustomerAggregates rolls invoices up by customer identification.
 	GetCustomerAggregates() (map[string]domain.CustomerAggregate, error)
 	GetInvoicesByCustomer(identification string) ([]*domain.Invoice, error)
+	// GetThirdPartyDirectory resolves document counterparties in bulk, keyed by
+	// identification+branch office and also by bare identification.
+	GetThirdPartyDirectory() (map[string]domain.ThirdParty, error)
 
 	// ── Bank balance ──────────────────────────────────────────────────────────
 	GetBankBalance() (*domain.BankBalance, error)

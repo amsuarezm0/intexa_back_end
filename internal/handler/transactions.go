@@ -93,8 +93,11 @@ func (h *TransactionsHandler) List(w http.ResponseWriter, r *http.Request) {
 		end = total
 	}
 
+	page_ := filtered[start:end]
+	attachToTransactions(thirdPartyDirectory(h.store), page_)
+
 	jsonOK(w, domain.TransactionListResponse{
-		Data:       filtered[start:end],
+		Data:       page_,
 		Total:      total,
 		Page:       page,
 		Limit:      limit,
@@ -113,6 +116,8 @@ func (h *TransactionsHandler) Get(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "transaction not found", http.StatusNotFound)
 		return
 	}
+	t.ThirdParty = resolveThirdParty(thirdPartyDirectory(h.store),
+		t.CounterpartyIdentification, t.CounterpartyBranchOffice, t.CounterpartySiigoID)
 	jsonOK(w, t)
 }
 

@@ -1094,6 +1094,37 @@ func (s *Store) GetCustomerAggregates() (map[string]domain.CustomerAggregate, er
 	return out, nil
 }
 
+func (s *Store) GetThirdPartyDirectory() (map[string]domain.ThirdParty, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	list := make([]*domain.Customer, 0, len(s.customers))
+	for _, c := range s.customers {
+		list = append(list, c)
+	}
+	// Lowest branch office first, so the head office claims the bare
+	// identification slot rather than an arbitrary branch.
+	sort.Slice(list, func(i, j int) bool { return list[i].BranchOffice < list[j].BranchOffice })
+
+	out := make(map[string]domain.ThirdParty)
+	for _, c := range list {
+		tp := domain.ThirdParty{
+			CustomerID:     c.ID,
+			Identification: c.Identification,
+			BranchOffice:   c.BranchOffice,
+			SiigoID:        c.SiigoID,
+			Name:           c.Name,
+			CommercialName: c.CommercialName,
+			Type:           c.Type,
+		}
+		out[domain.ThirdPartyKey(c.Identification, c.BranchOffice)] = tp
+		if _, seen := out[c.Identification]; !seen {
+			out[c.Identification] = tp
+		}
+	}
+	return out, nil
+}
+
 func (s *Store) GetInvoicesByCustomer(identification string) ([]*domain.Invoice, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

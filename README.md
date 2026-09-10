@@ -101,6 +101,14 @@ Base path: `/api/v1`
 | `GET` | `/customers/summary` | Counts plus total invoiced and outstanding balance |
 | `GET` | `/customers/{id}` | One third party with the invoices issued to it |
 
+Every document — FV, FC, RC and RP — carries a reference to its third party.
+Siigo's document payloads contain only `{id, identification, branch_office}` and
+never a name, so documents store that key and the name is resolved against
+`customers` when they are read: a client renamed in Siigo shows its new name
+everywhere after the next sync, with no stale copies. Responses expose it as a
+`thirdParty` object (`customerId`, `identification`, `name`, `type`); an
+unsynced third party still returns its identification so the row stays legible.
+
 > Third parties are synced from Siigo's `/v1/customers` and are read-only in ArCa.
 > `type` is `Cliente`, `Proveedor` or `Otro`. Identity is `(identification, branch_office)` —
 > a NIT repeats once per branch office — so a sync updates in place and never duplicates a

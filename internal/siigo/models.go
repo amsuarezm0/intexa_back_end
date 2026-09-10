@@ -43,7 +43,7 @@ type Invoice struct {
 	Name         string          `json:"name"`
 	Date         string          `json:"date"` // YYYY-MM-DD
 	DueDate      string          `json:"due_date"`
-	Customer     InvoiceCustomer `json:"customer"`
+	Customer     DocumentParty   `json:"customer"`
 	Seller       int             `json:"seller"`
 	Total        float64         `json:"total"`
 	Balance      float64         `json:"balance"`
@@ -55,16 +55,6 @@ type Invoice struct {
 
 type DocumentRef struct {
 	ID int `json:"id"`
-}
-
-type InvoiceCustomer struct {
-	PersonType     string `json:"person_type"`
-	IDType         string `json:"id_type"`
-	Identification string `json:"identification"`
-	BranchOffice   int    `json:"branch_office"`
-	Name           string `json:"name"`
-	CommercialName string `json:"commercial_name"`
-	Active         bool   `json:"active"`
 }
 
 type PaymentTerm struct {
@@ -165,15 +155,9 @@ type Voucher struct {
 	Name     string          `json:"name"`
 	Date     string          `json:"date"` // YYYY-MM-DD
 	Type     string          `json:"type"` // e.g. "DebtPayment"
-	Customer VoucherCustomer `json:"customer"`
+	Customer DocumentParty   `json:"customer"`
 	Items    []VoucherItem   `json:"items"`
 	Payment  VoucherPayment  `json:"payment"`
-}
-
-type VoucherCustomer struct {
-	ID             string `json:"id"`
-	Identification string `json:"identification"`
-	BranchOffice   int    `json:"branch_office"`
 }
 
 // VoucherPayment is how the money arrived. Name is the account it landed in
