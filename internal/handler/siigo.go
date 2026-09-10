@@ -733,7 +733,7 @@ func (h *SiigoHandler) savePaymentReceipts(receipts []siigopkg.PaymentReceipt, d
 			// descriptions are all categorisation has to work with.
 			Category:     categorizePurchase(itemDescs, ""),
 			Type:         domain.TypeEgreso,
-			Amount:       paymentReceiptTotal(0, pr.Items),
+			Amount:       paymentReceiptTotal(pr.Payment.Value, pr.Items),
 			Status:       receiptStatus(len(pr.Items), pr.Payment.Value),
 			Detail:       pr.Name + ifNonEmpty(" · ", strings.Join(itemDescs, " | ")),
 			Source:       domain.SourceSIIGO,
@@ -1089,25 +1089,27 @@ func voucherTotal(v siigopkg.Voucher) float64 {
 	return sum
 }
 
-// paymentReceiptTotal sums RP items whose account.movement is Credit.
+// paymentReceiptTotal is the cash actually paid on an RP.
 //
-// KNOWN WRONG, left unchanged deliberately. The RP payload has no "total" key —
-// the document value is payment.value, exactly as on a voucher — so the fallback
-// argument has always been zero and 565 receipts are stored at 0 despite
-// carrying a real payment (the largest is 203,197,666). Correcting it rewrites
-// the amount on hundreds of historical expenses, which is a decision to take
-// on its own rather than as a side effect of a status fix.
-func paymentReceiptTotal(total float64, items []siigopkg.PaymentReceiptItem) float64 {
+// payment.value is authoritative when present, exactly as on a voucher — the RP
+// payload has no "total" key at all, which is why this used to receive a zero
+// and left 575 receipts stored at 0.00 despite carrying real payments.
+//
+// Falling back to the items is not a matter of adding them all up: a receipt
+// without a payment block is double-entry, with a Debit line for the payable
+// being settled and a Credit line for the bank it left, so summing both sides
+// would count every peso twice. Only the Credit side is money out.
+func paymentReceiptTotal(paymentValue float64, items []siigopkg.PaymentReceiptItem) float64 {
+	if paymentValue != 0 {
+		return paymentValue
+	}
 	var sum float64
 	for _, it := range items {
 		if it.Account.Movement == "Credit" {
 			sum += it.Value
 		}
 	}
-	if sum != 0 {
-		return sum
-	}
-	return total
+	return sum
 }
 
 func firstPaymentDueDate(payments []siigopkg.PaymentTerm) string {

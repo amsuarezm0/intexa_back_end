@@ -35,16 +35,25 @@ func TestVoucherTotalFallsBackToItemSum(t *testing.T) {
 	}
 }
 
-func TestPaymentReceiptTotalUnchanged(t *testing.T) {
+// This used to assert the opposite — that the item sum beat the first argument,
+// which was read from a "total" key. That key does not exist on the RP endpoint;
+// the document value is payment.value, exactly as on a voucher. The old contract
+// was written "pending a verified RP payload", and the verified payload changed
+// it: payment.value now wins, and the items are only a fallback.
+func TestPaymentReceiptTotalPrefersPaymentValue(t *testing.T) {
 	items := []siigopkg.PaymentReceiptItem{
 		{Value: 300, Account: siigopkg.VoucherAccount{Movement: "Credit"}},
 		{Value: 200, Account: siigopkg.VoucherAccount{Movement: "Debit"}},
 	}
-	if got := paymentReceiptTotal(999, items); got != 300 {
-		t.Errorf("paymentReceiptTotal = %.2f, want 300 (Credit side only)", got)
+	if got := paymentReceiptTotal(999, items); got != 999 {
+		t.Errorf("paymentReceiptTotal = %.2f, want 999 (payment.value)", got)
 	}
-	// No Credit lines: fall back to the header total.
-	if got := paymentReceiptTotal(999, nil); got != 999 {
-		t.Errorf("paymentReceiptTotal fallback = %.2f, want 999", got)
+	// No payment block: only the Credit side is money out. Summing both sides
+	// would count the same peso twice, since these receipts are double-entry.
+	if got := paymentReceiptTotal(0, items); got != 300 {
+		t.Errorf("paymentReceiptTotal fallback = %.2f, want 300 (Credit only)", got)
+	}
+	if got := paymentReceiptTotal(0, nil); got != 0 {
+		t.Errorf("annulled shell = %.2f, want 0", got)
 	}
 }

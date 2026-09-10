@@ -66,3 +66,4 @@ func TestInvoiceStatusUnchangedWithoutCredits(t *testing.T) {
 		}
 	}
 }
+
