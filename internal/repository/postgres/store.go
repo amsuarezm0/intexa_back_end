@@ -69,12 +69,14 @@ func (s *Store) CreateTransaction(t *domain.Transaction) error {
 	t.ID = uuid.NewString()
 	return s.pool.QueryRow(bg(), `
 		INSERT INTO transactions
-		  (id, date, description, category, type, amount, status, reference, detail, source, external_id, is_projection)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,NULLIF($8,''),$9,$10,NULLIF($11,''),$12)
+		  (id, date, description, category, type, amount, status, reference, detail, source, external_id, is_projection,
+		   counterparty_identification, counterparty_branch_office, counterparty_siigo_id)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,NULLIF($8,''),$9,$10,NULLIF($11,''),$12,$13,$14,$15)
 		RETURNING created_at, updated_at`,
 		t.ID, parseDate(t.Date), t.Description, t.Category, string(t.Type),
 		t.Amount, string(t.Status), t.Reference, t.Detail, string(t.Source),
 		t.ExternalID, t.IsProjection,
+		t.CounterpartyIdentification, t.CounterpartyBranchOffice, t.CounterpartySiigoID,
 	).Scan(&t.CreatedAt, &t.UpdatedAt)
 }
 
@@ -128,10 +130,13 @@ func (s *Store) UpdateTransaction(t *domain.Transaction) (bool, error) {
 	tag, err := s.pool.Exec(bg(), `
 		UPDATE transactions
 		SET    date=$1, description=$2, category=$3, type=$4, amount=$5,
-		       status=$6, reference=NULLIF($7,''), detail=$8, source=$9, updated_at=now()
-		WHERE  id=$10`,
+		       status=$6, reference=NULLIF($7,''), detail=$8, source=$9,
+		       counterparty_identification=$10, counterparty_branch_office=$11, counterparty_siigo_id=$12,
+		       updated_at=now()
+		WHERE  id=$13`,
 		parseDate(t.Date), t.Description, t.Category, string(t.Type),
-		t.Amount, string(t.Status), t.Reference, t.Detail, string(t.Source), t.ID)
+		t.Amount, string(t.Status), t.Reference, t.Detail, string(t.Source),
+		t.CounterpartyIdentification, t.CounterpartyBranchOffice, t.CounterpartySiigoID, t.ID)
 	return tag.RowsAffected() > 0, err
 }
 

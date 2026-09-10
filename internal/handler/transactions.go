@@ -141,6 +141,7 @@ func (h *TransactionsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		}
 		t.Reference = ref
 	}
+	normalizeCounterparty(h.store, &t)
 	if err := h.store.CreateTransaction(&t); err != nil {
 		jsonError(w, "internal server error", http.StatusInternalServerError)
 		return
@@ -150,9 +151,17 @@ func (h *TransactionsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		UserName: actor, Initial: initial, Action: "Creó transacción",
 		Module: "Transacciones", Color: "bg-blue-500",
 	})
+	t.ThirdParty = resolveThirdParty(thirdPartyDirectory(h.store),
+		t.CounterpartyIdentification, t.CounterpartyBranchOffice, t.CounterpartySiigoID)
 	jsonCreated(w, t)
 }
 
+// Update replaces a manual transaction.
+//
+// The body is a full replacement, not a patch: a counterparty left out of the
+// request clears the one on record. Callers that mean to keep a third party
+// must send it back — the app's movement drawer always does, including when the
+// user removes it.
 func (h *TransactionsHandler) Update(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	existing, ok, err := h.store.GetTransactionByID(id)
@@ -174,6 +183,7 @@ func (h *TransactionsHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	t.ID = id
+	normalizeCounterparty(h.store, &t)
 	if _, err := h.store.UpdateTransaction(&t); err != nil {
 		jsonError(w, "internal server error", http.StatusInternalServerError)
 		return
@@ -183,6 +193,8 @@ func (h *TransactionsHandler) Update(w http.ResponseWriter, r *http.Request) {
 		UserName: actor, Initial: initial, Action: "Editó transacción",
 		Module: "Transacciones", Color: "bg-yellow-500",
 	})
+	t.ThirdParty = resolveThirdParty(thirdPartyDirectory(h.store),
+		t.CounterpartyIdentification, t.CounterpartyBranchOffice, t.CounterpartySiigoID)
 	jsonOK(w, t)
 }
 

@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"strings"
+
 	"github.com/intexa/arca-api/internal/domain"
 	"github.com/intexa/arca-api/internal/repository"
 )
@@ -64,6 +66,33 @@ func alertParty(tp *domain.ThirdParty, fallback string) string {
 		}
 	}
 	return fallback
+}
+
+// normalizeCounterparty settles the third party a manual movement was saved
+// with. The client picks one and sends its identification and branch office;
+// the Siigo id is filled in here from the directory rather than trusted from
+// the request, and a blank identification clears the other two so a movement
+// cannot keep a dangling branch office or id after its third party is removed.
+//
+// An identification that matches nothing is still stored: third parties are
+// synced from Siigo on a schedule, and refusing a NIT that has not arrived yet
+// would block a legitimate movement.
+func normalizeCounterparty(store repository.Store, t *domain.Transaction) {
+	t.CounterpartyIdentification = strings.TrimSpace(t.CounterpartyIdentification)
+	if t.CounterpartyIdentification == "" {
+		t.CounterpartyBranchOffice = 0
+		t.CounterpartySiigoID = ""
+		return
+	}
+	dir := thirdPartyDirectory(store)
+	if tp := resolveThirdParty(dir, t.CounterpartyIdentification, t.CounterpartyBranchOffice, ""); tp != nil {
+		t.CounterpartySiigoID = tp.SiigoID
+		// Trust the directory's branch office when the pair resolved exactly,
+		// so a stale branch from the client does not persist.
+		if tp.CustomerID != "" {
+			t.CounterpartyBranchOffice = tp.BranchOffice
+		}
+	}
 }
 
 // attachToTransactionPtrs is the pointer-slice form, for the period payload.

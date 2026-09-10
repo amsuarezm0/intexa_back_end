@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/intexa/arca-api/internal/domain"
+	"github.com/intexa/arca-api/internal/repository/memory"
 )
 
 func directory() map[string]domain.ThirdParty {
@@ -118,5 +119,60 @@ func TestAlertPartyPrefersNameThenNIT(t *testing.T) {
 		if got := alertParty(c.tp, c.fallback); got != c.want {
 			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
 		}
+	}
+}
+
+func TestNormalizeCounterpartyFillsSiigoIDAndBranch(t *testing.T) {
+	store := memory.New()
+	c := &domain.Customer{
+		Identification: "901037916", BranchOffice: 1, SiigoID: "siigo-uuid-1",
+		Name: "Fosyga Régimen de Excepción", Type: domain.CustomerTypeOther, Active: true,
+	}
+	if _, err := store.UpsertCustomer(c); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// The client sends only the identification and branch it picked.
+	tx := &domain.Transaction{CounterpartyIdentification: " 901037916 ", CounterpartyBranchOffice: 1}
+	normalizeCounterparty(store, tx)
+
+	if tx.CounterpartyIdentification != "901037916" {
+		t.Errorf("identification not trimmed: %q", tx.CounterpartyIdentification)
+	}
+	if tx.CounterpartySiigoID != "siigo-uuid-1" {
+		t.Errorf("siigo id should come from the directory, got %q", tx.CounterpartySiigoID)
+	}
+	if tx.CounterpartyBranchOffice != 1 {
+		t.Errorf("branch office: got %d", tx.CounterpartyBranchOffice)
+	}
+}
+
+// Clearing the third party must not leave a dangling branch office or id.
+func TestNormalizeCounterpartyClearsEverythingWhenBlank(t *testing.T) {
+	store := memory.New()
+	tx := &domain.Transaction{
+		CounterpartyIdentification: "  ",
+		CounterpartyBranchOffice:   3,
+		CounterpartySiigoID:        "stale-uuid",
+	}
+	normalizeCounterparty(store, tx)
+
+	if tx.CounterpartyIdentification != "" || tx.CounterpartyBranchOffice != 0 || tx.CounterpartySiigoID != "" {
+		t.Errorf("blank identification must clear all three, got %+v", tx)
+	}
+}
+
+// A NIT that has not been synced yet is still accepted — third parties arrive
+// on a schedule and a legitimate movement must not be blocked waiting for one.
+func TestNormalizeCounterpartyKeepsUnsyncedIdentification(t *testing.T) {
+	store := memory.New()
+	tx := &domain.Transaction{CounterpartyIdentification: "900999999", CounterpartyBranchOffice: 0}
+	normalizeCounterparty(store, tx)
+
+	if tx.CounterpartyIdentification != "900999999" {
+		t.Errorf("unsynced identification should be kept, got %q", tx.CounterpartyIdentification)
+	}
+	if tx.CounterpartySiigoID != "" {
+		t.Errorf("no siigo id should be invented, got %q", tx.CounterpartySiigoID)
 	}
 }
