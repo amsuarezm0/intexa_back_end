@@ -158,9 +158,21 @@ type User struct {
 	CreatedAt    time.Time  `json:"createdAt"`
 }
 
+// CategoryType mirrors the categories.type CHECK constraint. Seed rows created
+// before the type was editable may be "both"; categories created from the app
+// must be one of income/expense.
+type CategoryType string
+
+const (
+	CategoryIncome  CategoryType = "income"
+	CategoryExpense CategoryType = "expense"
+	CategoryBoth    CategoryType = "both"
+)
+
 type Category struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID   string       `json:"id"`
+	Name string       `json:"name"`
+	Type CategoryType `json:"type"`
 }
 
 type StatCard struct {

@@ -52,6 +52,7 @@ type Store interface {
 
 	// ── Categories ───────────────────────────────────────────────────────────
 	GetCategories() ([]domain.Category, error)
+	CreateCategory(c *domain.Category) error
 
 	// ── Settings ─────────────────────────────────────────────────────────────
 	GetSettings(userID string) (domain.Settings, error)

@@ -503,7 +503,7 @@ func (s *Store) RemoveAllowedDomain(domain string) error {
 
 func (s *Store) GetCategories() ([]domain.Category, error) {
 	rows, err := s.pool.Query(bg(),
-		`SELECT id::TEXT, name FROM categories ORDER BY name`)
+		`SELECT id::TEXT, name, type FROM categories ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -511,12 +511,20 @@ func (s *Store) GetCategories() ([]domain.Category, error) {
 	cats := make([]domain.Category, 0)
 	for rows.Next() {
 		var c domain.Category
-		if err := rows.Scan(&c.ID, &c.Name); err != nil {
+		if err := rows.Scan(&c.ID, &c.Name, &c.Type); err != nil {
 			return nil, err
 		}
 		cats = append(cats, c)
 	}
 	return cats, rows.Err()
+}
+
+func (s *Store) CreateCategory(c *domain.Category) error {
+	return s.pool.QueryRow(bg(), `
+		INSERT INTO categories (name, type) VALUES ($1, $2)
+		RETURNING id::TEXT`,
+		c.Name, string(c.Type),
+	).Scan(&c.ID)
 }
 
 // ── Settings ──────────────────────────────────────────────────────────────────

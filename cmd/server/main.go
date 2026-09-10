@@ -149,6 +149,13 @@ func main() {
 				r.Post("/siigo/sync", siigoH.Sync)
 			})
 
+			// Categories — every role that writes data, i.e. all but CONSULTA
+			r.Group(func(r chi.Router) {
+				r.Use(middleware.RequireRole("ADMINISTRADOR", "TESORERÍA", "GESTIÓN"))
+
+				r.Post("/categories", settings.CreateCategory)
+			})
+
 			// Projections — ADMINISTRADOR + GESTIÓN
 			r.Group(func(r chi.Router) {
 				r.Use(middleware.RequireRole("ADMINISTRADOR", "GESTIÓN"))

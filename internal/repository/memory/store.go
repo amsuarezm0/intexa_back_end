@@ -56,15 +56,15 @@ func (s *Store) seed() {
 	now := time.Now()
 
 	s.categories = []domain.Category{
-		{ID: uuid.NewString(), Name: "Operacional - Ventas"},
-		{ID: uuid.NewString(), Name: "Ingresos Editoriales"},
-		{ID: uuid.NewString(), Name: "Ingresos Directos"},
-		{ID: uuid.NewString(), Name: "Finanzas - Inversiones"},
-		{ID: uuid.NewString(), Name: "Gastos - Personal"},
-		{ID: uuid.NewString(), Name: "Gastos - Tecnología"},
-		{ID: uuid.NewString(), Name: "Gastos Operativos"},
-		{ID: uuid.NewString(), Name: "Marketing"},
-		{ID: uuid.NewString(), Name: "Infraestructura"},
+		{ID: uuid.NewString(), Name: "Operacional - Ventas", Type: domain.CategoryIncome},
+		{ID: uuid.NewString(), Name: "Ingresos Editoriales", Type: domain.CategoryIncome},
+		{ID: uuid.NewString(), Name: "Ingresos Directos", Type: domain.CategoryIncome},
+		{ID: uuid.NewString(), Name: "Finanzas - Inversiones", Type: domain.CategoryIncome},
+		{ID: uuid.NewString(), Name: "Gastos - Personal", Type: domain.CategoryExpense},
+		{ID: uuid.NewString(), Name: "Gastos - Tecnología", Type: domain.CategoryExpense},
+		{ID: uuid.NewString(), Name: "Gastos Operativos", Type: domain.CategoryExpense},
+		{ID: uuid.NewString(), Name: "Marketing", Type: domain.CategoryExpense},
+		{ID: uuid.NewString(), Name: "Infraestructura", Type: domain.CategoryExpense},
 	}
 
 	admin := &domain.User{
@@ -744,7 +744,22 @@ func (s *Store) GetCategories() ([]domain.Category, error) {
 	defer s.mu.RUnlock()
 	cp := make([]domain.Category, len(s.categories))
 	copy(cp, s.categories)
+	sort.Slice(cp, func(i, j int) bool { return cp[i].Name < cp[j].Name })
 	return cp, nil
+}
+
+func (s *Store) CreateCategory(c *domain.Category) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Mirrors the UNIQUE (name) constraint the Postgres store relies on.
+	for _, existing := range s.categories {
+		if strings.EqualFold(existing.Name, c.Name) {
+			return fmt.Errorf("category %q already exists", c.Name)
+		}
+	}
+	c.ID = uuid.NewString()
+	s.categories = append(s.categories, *c)
+	return nil
 }
 
 // ── Settings ──────────────────────────────────────────────────────────────────
