@@ -26,6 +26,7 @@ func (h *NotificationsHandler) GetNotifications(w http.ResponseWriter, r *http.R
 	}
 
 	now := time.Now()
+	dir := thirdPartyDirectory(h.store)
 	var gastos, ingresos []domain.NotificationItem
 
 	for _, t := range pending {
@@ -42,6 +43,10 @@ func (h *NotificationsHandler) GetNotifications(w http.ResponseWriter, r *http.R
 			urgency = "due-soon"
 		}
 
+		// Category and third party are both kept: the frontend shows the party
+		// when there is one and the category either way, rather than one
+		// displacing the other.
+		tp := resolveThirdParty(dir, t.CounterpartyIdentification, t.CounterpartyBranchOffice, t.CounterpartySiigoID)
 		item := domain.NotificationItem{
 			ID:          t.ID,
 			Title:       t.Description,
@@ -50,6 +55,7 @@ func (h *NotificationsHandler) GetNotifications(w http.ResponseWriter, r *http.R
 			Date:        t.Date,
 			DaysOverdue: daysOverdue,
 			Urgency:     urgency,
+			ThirdParty:  tp,
 		}
 
 		if t.Type == domain.TypeEgreso {

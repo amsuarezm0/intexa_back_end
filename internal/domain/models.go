@@ -338,16 +338,20 @@ type Alert struct {
 	Description string  `json:"description"`
 	Amount      float64 `json:"amount"`
 	DueDate     string  `json:"dueDate"`
+	// Who the money is owed to or by. A liquidity alert is only actionable if
+	// you know which third party to chase.
+	ThirdParty *ThirdParty `json:"thirdParty,omitempty"`
 }
 
 type NotificationItem struct {
-	ID          string  `json:"id"`
-	Title       string  `json:"title"`
-	Category    string  `json:"category"`
-	Amount      float64 `json:"amount"`
-	Date        string  `json:"date"`
-	DaysOverdue int     `json:"daysOverdue"` // negative = days until due
-	Urgency     string  `json:"urgency"`     // "overdue" | "due-soon" | "upcoming"
+	ID          string      `json:"id"`
+	Title       string      `json:"title"`
+	Category    string      `json:"category"`
+	Amount      float64     `json:"amount"`
+	Date        string      `json:"date"`
+	DaysOverdue int         `json:"daysOverdue"` // negative = days until due
+	Urgency     string      `json:"urgency"`     // "overdue" | "due-soon" | "upcoming"
+	ThirdParty  *ThirdParty `json:"thirdParty,omitempty"`
 }
 
 type NotificationSummary struct {
@@ -401,13 +405,14 @@ type ProjectionPoint struct {
 }
 
 type ProjectionAlert struct {
-	ID          string  `json:"id"`
-	Icon        string  `json:"icon"`
-	Title       string  `json:"title"`
-	Description string  `json:"description"`
-	DueDate     string  `json:"dueDate"`
-	Amount      float64 `json:"amount"`
-	Color       string  `json:"color"`
+	ID          string      `json:"id"`
+	Icon        string      `json:"icon"`
+	Title       string      `json:"title"`
+	Description string      `json:"description"`
+	DueDate     string      `json:"dueDate"`
+	Amount      float64     `json:"amount"`
+	Color       string      `json:"color"`
+	ThirdParty  *ThirdParty `json:"thirdParty,omitempty"`
 }
 
 type ProjectionSummary struct {

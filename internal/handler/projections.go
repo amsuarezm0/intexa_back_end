@@ -161,6 +161,10 @@ func (h *ProjectionsHandler) GetSummary(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Build alerts — invoices first (income), then purchases (expense), then manual projections.
+	// Names come from the customers directory: the documents hold only the
+	// third party's key, so without this a projection alert falls back to its
+	// category and never says who owes the money.
+	dir := thirdPartyDirectory(h.store)
 	type entry struct {
 		alert    domain.ProjectionAlert
 		daysAway int
@@ -172,7 +176,8 @@ func (h *ProjectionsHandler) GetSummary(w http.ResponseWriter, r *http.Request) 
 		if inv.Status == domain.StatusCompleted || inv.Status == domain.StatusCancelled {
 			continue
 		}
-		desc := inv.CustomerName
+		invParty := resolveThirdParty(dir, inv.CustomerIdentification, inv.CustomerBranchOffice, inv.CustomerSiigoID)
+		desc := alertParty(invParty, inv.CustomerName)
 		if desc == "" {
 			desc = inv.Category
 		}
@@ -192,6 +197,7 @@ func (h *ProjectionsHandler) GetSummary(w http.ResponseWriter, r *http.Request) 
 					DueDate:     inst.DueDate,
 					Amount:      inst.Value,
 					Color:       "brand-success",
+					ThirdParty:  invParty,
 				},
 				daysAway: daysAway,
 				amount:   inst.Value,
@@ -203,7 +209,8 @@ func (h *ProjectionsHandler) GetSummary(w http.ResponseWriter, r *http.Request) 
 		if pur.Status == domain.StatusCompleted || pur.Status == domain.StatusCancelled {
 			continue
 		}
-		desc := pur.ProviderName
+		purParty := resolveThirdParty(dir, pur.ProviderIdentification, pur.ProviderBranchOffice, pur.ProviderSiigoID)
+		desc := alertParty(purParty, pur.ProviderName)
 		if desc == "" {
 			desc = pur.Category
 		}
@@ -223,6 +230,7 @@ func (h *ProjectionsHandler) GetSummary(w http.ResponseWriter, r *http.Request) 
 					DueDate:     inst.DueDate,
 					Amount:      inst.Value,
 					Color:       "brand-danger",
+					ThirdParty:  purParty,
 				},
 				daysAway: daysAway,
 				amount:   inst.Value,
@@ -242,15 +250,17 @@ func (h *ProjectionsHandler) GetSummary(w http.ResponseWriter, r *http.Request) 
 		if t.Type == domain.TypeEgreso {
 			color, icon = "brand-danger", "AlertCircle"
 		}
+		txParty := resolveThirdParty(dir, t.CounterpartyIdentification, t.CounterpartyBranchOffice, t.CounterpartySiigoID)
 		entries = append(entries, entry{
 			alert: domain.ProjectionAlert{
 				ID:          t.ID,
 				Icon:        icon,
 				Title:       t.Description,
-				Description: t.Category,
+				Description: firstNonEmpty(alertParty(txParty, ""), t.Category),
 				DueDate:     t.Date,
 				Amount:      t.Amount,
 				Color:       color,
+				ThirdParty:  txParty,
 			},
 			daysAway: daysAway,
 			amount:   t.Amount,

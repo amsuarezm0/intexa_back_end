@@ -141,6 +141,10 @@ func (h *CashFlowHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ── Alerts from pending FV (cobros) and FC (pagos) ───────────────────────
+	// The documents carry only the third party's key, so the name comes from
+	// the customers directory — without it these alerts have no description at
+	// all, since no document table stores a counterparty name.
+	dir := thirdPartyDirectory(h.store)
 	alerts := []domain.Alert{}
 	for _, inv := range invoices {
 		title := "Cobro Pendiente"
@@ -151,13 +155,15 @@ func (h *CashFlowHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 		if dueDate == "" {
 			dueDate = inv.Date
 		}
+		tp := resolveThirdParty(dir, inv.CustomerIdentification, inv.CustomerBranchOffice, inv.CustomerSiigoID)
 		alerts = append(alerts, domain.Alert{
 			ID:          inv.ID,
 			Type:        "success",
 			Title:       title,
-			Description: inv.CustomerName,
+			Description: alertParty(tp, inv.CustomerName),
 			Amount:      inv.Balance,
 			DueDate:     dueDate,
+			ThirdParty:  tp,
 		})
 	}
 	for _, pur := range purchases {
@@ -169,13 +175,15 @@ func (h *CashFlowHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 		if dueDate == "" {
 			dueDate = pur.Date
 		}
+		tp := resolveThirdParty(dir, pur.ProviderIdentification, pur.ProviderBranchOffice, pur.ProviderSiigoID)
 		alerts = append(alerts, domain.Alert{
 			ID:          pur.ID,
 			Type:        "danger",
 			Title:       title,
-			Description: pur.ProviderName,
+			Description: alertParty(tp, pur.ProviderName),
 			Amount:      pur.Balance,
 			DueDate:     dueDate,
+			ThirdParty:  tp,
 		})
 	}
 	sort.Slice(alerts, func(i, j int) bool { return alerts[i].Amount > alerts[j].Amount })

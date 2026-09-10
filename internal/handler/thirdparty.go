@@ -49,6 +49,23 @@ func attachToTransactions(dir map[string]domain.ThirdParty, txs []domain.Transac
 	}
 }
 
+// alertParty is the one-line description of an alert's counterparty: its name
+// when the third party is synced, its identification when it is not, and
+// whatever the document itself recorded (a manual entry) as a last resort. An
+// alert saying only "Cobro Pendiente" with a blank line under it is not
+// actionable — the point is knowing who to chase.
+func alertParty(tp *domain.ThirdParty, fallback string) string {
+	if tp != nil {
+		if tp.Name != "" {
+			return tp.Name
+		}
+		if tp.Identification != "" {
+			return "NIT " + tp.Identification
+		}
+	}
+	return fallback
+}
+
 // attachToTransactionPtrs is the pointer-slice form, for the period payload.
 func attachToTransactionPtrs(dir map[string]domain.ThirdParty, txs []*domain.Transaction) {
 	for _, t := range txs {

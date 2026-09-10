@@ -127,7 +127,7 @@ func (h *DashboardHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Alerts from pending manual transactions (overdue >= 5 days)
-	alerts := buildPendingAlerts(pending, now, 5, 4)
+	alerts := buildPendingAlerts(pending, now, 5, 4, thirdPartyDirectory(h.store))
 	if monthInc-monthExp < 0 {
 		alerts = append([]domain.Alert{{
 			ID: "balance-warning", Type: "danger",
@@ -151,7 +151,7 @@ func (h *DashboardHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 
 // buildPendingAlerts builds Alert items from pending (non-projection) transactions
 // that are >= minAgeDays overdue.
-func buildPendingAlerts(pending []*domain.Transaction, now time.Time, minAgeDays, maxCount int) []domain.Alert {
+func buildPendingAlerts(pending []*domain.Transaction, now time.Time, minAgeDays, maxCount int, dir map[string]domain.ThirdParty) []domain.Alert {
 	alerts := []domain.Alert{}
 	for _, t := range pending {
 		d, err := time.Parse("2006-01-02", t.Date)
@@ -166,13 +166,19 @@ func buildPendingAlerts(pending []*domain.Transaction, now time.Time, minAgeDays
 		if ageDays > 10 {
 			kind = "danger"
 		}
+		tp := resolveThirdParty(dir, t.CounterpartyIdentification, t.CounterpartyBranchOffice, t.CounterpartySiigoID)
+		desc := fmt.Sprintf("Pendiente hace %d días · %s", ageDays, t.Category)
+		if party := alertParty(tp, ""); party != "" {
+			desc = fmt.Sprintf("%s · Pendiente hace %d días", party, ageDays)
+		}
 		alerts = append(alerts, domain.Alert{
 			ID:          t.ID,
 			Type:        kind,
 			Title:       t.Description,
-			Description: fmt.Sprintf("Pendiente hace %d días · %s", ageDays, t.Category),
+			Description: desc,
 			Amount:      t.Amount,
 			DueDate:     t.Date,
+			ThirdParty:  tp,
 		})
 	}
 	sort.Slice(alerts, func(i, j int) bool { return alerts[i].Amount > alerts[j].Amount })

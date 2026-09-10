@@ -98,3 +98,25 @@ func TestAttachToInvoicesBackfillsCustomerName(t *testing.T) {
 		t.Errorf("an existing name must not be overwritten, got %q", invoices[1].CustomerName)
 	}
 }
+
+// A liquidity alert has to name someone. Synced third parties give a name;
+// unsynced ones at least give a NIT; only a manual record falls back to
+// whatever the document itself recorded.
+func TestAlertPartyPrefersNameThenNIT(t *testing.T) {
+	cases := []struct {
+		name     string
+		tp       *domain.ThirdParty
+		fallback string
+		want     string
+	}{
+		{"synced third party", &domain.ThirdParty{Name: "Fosyga", Identification: "901037916"}, "algo", "Fosyga"},
+		{"unsynced, key only", &domain.ThirdParty{Identification: "901037916"}, "algo", "NIT 901037916"},
+		{"no third party", nil, "Cliente manual", "Cliente manual"},
+		{"nothing at all", nil, "", ""},
+	}
+	for _, c := range cases {
+		if got := alertParty(c.tp, c.fallback); got != c.want {
+			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
+		}
+	}
+}
