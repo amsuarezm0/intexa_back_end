@@ -29,6 +29,10 @@ func (h *TransactionsHandler) List(w http.ResponseWriter, r *http.Request) {
 	dateTo := q.Get("dateTo")       // YYYY-MM-DD inclusive
 	sourceFilter := q.Get("source") // "Siigo", "Manual", or ""
 	isProjectionParam := q.Get("isProjection") // "true", "false", or "" (no filter)
+	// Third party filter: an identification, matched across every branch office.
+	// The client sends the NIT it picked, and a NIT is what identifies the
+	// counterparty for someone chasing "todo lo de este cliente".
+	thirdPartyFilter := strings.TrimSpace(q.Get("thirdParty"))
 	page, _ := strconv.Atoi(q.Get("page"))
 	limit, _ := strconv.Atoi(q.Get("limit"))
 	if page < 1 {
@@ -77,6 +81,9 @@ func (h *TransactionsHandler) List(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if isProjectionParam == "false" && t.IsProjection {
+			continue
+		}
+		if thirdPartyFilter != "" && t.CounterpartyIdentification != thirdPartyFilter {
 			continue
 		}
 		filtered = append(filtered, *t)

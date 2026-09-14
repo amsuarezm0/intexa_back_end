@@ -91,33 +91,34 @@ func (s *Store) seed() {
 		status      domain.TransactionStatus
 		source      domain.TransactionSource
 		externalID  string // non-empty → Siigo
+		counterID   string // counterparty NIT, matching a seeded third party
 	}
 
 	monthlyTemplates := []txTemplate{
 		// Ingresos
-		{3, "Venta servicios tecnológicos", "Ventas", domain.TypeIngreso, 18500000, domain.StatusCompleted, domain.SourceSIIGO, "SIIGO-INV-%d%02d-01"},
-		{7, "Consultoría empresarial", "Servicios", domain.TypeIngreso, 6200000, domain.StatusCompleted, domain.SourceSIIGO, "SIIGO-INV-%d%02d-02"},
-		{12, "Pago cliente Corporación Alfa", "Ventas", domain.TypeIngreso, 9800000, domain.StatusCompleted, domain.SourceManual, ""},
-		{18, "Anticipo proyecto Beta", "Ventas", domain.TypeIngreso, 4500000, domain.StatusCompleted, domain.SourceManual, ""},
-		{22, "Venta licencias software", "Ventas", domain.TypeIngreso, 3100000, domain.StatusCompleted, domain.SourceSIIGO, "SIIGO-INV-%d%02d-03"},
-		{27, "Servicios de soporte mensual", "Servicios", domain.TypeIngreso, 2800000, domain.StatusCompleted, domain.SourceManual, ""},
+		{3, "Venta servicios tecnológicos", "Ventas", domain.TypeIngreso, 18500000, domain.StatusCompleted, domain.SourceSIIGO, "SIIGO-INV-%d%02d-01", "900123456"},
+		{7, "Consultoría empresarial", "Servicios", domain.TypeIngreso, 6200000, domain.StatusCompleted, domain.SourceSIIGO, "SIIGO-INV-%d%02d-02", ""},
+		{12, "Pago cliente Corporación Alfa", "Ventas", domain.TypeIngreso, 9800000, domain.StatusCompleted, domain.SourceManual, "", "900123456"},
+		{18, "Anticipo proyecto Beta", "Ventas", domain.TypeIngreso, 4500000, domain.StatusCompleted, domain.SourceManual, "", "830987654"},
+		{22, "Venta licencias software", "Ventas", domain.TypeIngreso, 3100000, domain.StatusCompleted, domain.SourceSIIGO, "SIIGO-INV-%d%02d-03", ""},
+		{27, "Servicios de soporte mensual", "Servicios", domain.TypeIngreso, 2800000, domain.StatusCompleted, domain.SourceManual, "", ""},
 		// Egresos
-		{1, "Nómina quincena 1", "Nómina", domain.TypeEgreso, 8500000, domain.StatusCompleted, domain.SourceManual, ""},
-		{5, "Arrendamiento oficina", "Arrendamiento", domain.TypeEgreso, 3200000, domain.StatusCompleted, domain.SourceSIIGO, "SIIGO-EGR-%d%02d-01"},
-		{8, "Proveedor insumos TI", "Proveedores", domain.TypeEgreso, 1450000, domain.StatusCompleted, domain.SourceSIIGO, "SIIGO-EGR-%d%02d-02"},
-		{10, "Servicios públicos", "Proveedores", domain.TypeEgreso, 580000, domain.StatusCompleted, domain.SourceManual, ""},
-		{15, "Nómina quincena 2", "Nómina", domain.TypeEgreso, 8500000, domain.StatusCompleted, domain.SourceManual, ""},
-		{16, "IVA declaración bimestral", "Impuestos", domain.TypeEgreso, 2100000, domain.StatusCompleted, domain.SourceSIIGO, "SIIGO-EGR-%d%02d-03"},
-		{20, "Mantenimiento equipos", "Proveedores", domain.TypeEgreso, 750000, domain.StatusCompleted, domain.SourceManual, ""},
-		{24, "Seguro empresarial", "Otros", domain.TypeEgreso, 490000, domain.StatusCompleted, domain.SourceManual, ""},
-		{28, "Papelería y suministros", "Otros", domain.TypeEgreso, 180000, domain.StatusCompleted, domain.SourceManual, ""},
+		{1, "Nómina quincena 1", "Nómina", domain.TypeEgreso, 8500000, domain.StatusCompleted, domain.SourceManual, "", ""},
+		{5, "Arrendamiento oficina", "Arrendamiento", domain.TypeEgreso, 3200000, domain.StatusCompleted, domain.SourceSIIGO, "SIIGO-EGR-%d%02d-01", ""},
+		{8, "Proveedor insumos TI", "Proveedores", domain.TypeEgreso, 1450000, domain.StatusCompleted, domain.SourceSIIGO, "SIIGO-EGR-%d%02d-02", "860111222"},
+		{10, "Servicios públicos", "Proveedores", domain.TypeEgreso, 580000, domain.StatusCompleted, domain.SourceManual, "", ""},
+		{15, "Nómina quincena 2", "Nómina", domain.TypeEgreso, 8500000, domain.StatusCompleted, domain.SourceManual, "", ""},
+		{16, "IVA declaración bimestral", "Impuestos", domain.TypeEgreso, 2100000, domain.StatusCompleted, domain.SourceSIIGO, "SIIGO-EGR-%d%02d-03", ""},
+		{20, "Mantenimiento equipos", "Proveedores", domain.TypeEgreso, 750000, domain.StatusCompleted, domain.SourceManual, "", ""},
+		{24, "Seguro empresarial", "Otros", domain.TypeEgreso, 490000, domain.StatusCompleted, domain.SourceManual, "", ""},
+		{28, "Papelería y suministros", "Otros", domain.TypeEgreso, 180000, domain.StatusCompleted, domain.SourceManual, "", "800333444"},
 	}
 
 	// Current month gets pending items and a couple of cancelled ones
 	currentMonthExtras := []txTemplate{
-		{5, "Proyecto Gamma — anticipo", "Ventas", domain.TypeIngreso, 12000000, domain.StatusPending, domain.SourceManual, ""},
-		{10, "Renovación plan cloud", "Proveedores", domain.TypeEgreso, 920000, domain.StatusPending, domain.SourceManual, ""},
-		{14, "Reintegro viáticos", "Otros", domain.TypeIngreso, 340000, domain.StatusCancelled, domain.SourceManual, ""},
+		{5, "Proyecto Gamma — anticipo", "Ventas", domain.TypeIngreso, 12000000, domain.StatusPending, domain.SourceManual, "", ""},
+		{10, "Renovación plan cloud", "Proveedores", domain.TypeEgreso, 920000, domain.StatusPending, domain.SourceManual, "", "901555666"},
+		{14, "Reintegro viáticos", "Otros", domain.TypeIngreso, 340000, domain.StatusCancelled, domain.SourceManual, "", ""},
 	}
 
 	addTx := func(year, month, day int, tmpl txTemplate) {
@@ -139,18 +140,19 @@ func (s *Store) seed() {
 			reference = fmt.Sprintf("%s-%d%02d-%s", docPrefix, year, month, extID[strings.LastIndex(extID, "-")+1:])
 		}
 		t := &domain.Transaction{
-			ID:          uuid.NewString(),
-			Date:        date.Format("2006-01-02"),
-			Description: tmpl.description,
-			Category:    tmpl.category,
-			Type:        tmpl.txType,
-			Amount:      tmpl.amount,
-			Status:      tmpl.status,
-			Reference:   reference,
-			Source:      tmpl.source,
-			ExternalID:  extID,
-			CreatedAt:   date,
-			UpdatedAt:   date,
+			ID:                         uuid.NewString(),
+			Date:                       date.Format("2006-01-02"),
+			Description:                tmpl.description,
+			Category:                   tmpl.category,
+			Type:                       tmpl.txType,
+			Amount:                     tmpl.amount,
+			Status:                     tmpl.status,
+			Reference:                  reference,
+			Source:                     tmpl.source,
+			ExternalID:                 extID,
+			CounterpartyIdentification: tmpl.counterID,
+			CreatedAt:                  date,
+			UpdatedAt:                  date,
 		}
 		s.transactions[t.ID] = t
 	}
@@ -280,6 +282,46 @@ func (s *Store) seed() {
 			}
 			s.purchases[pur.ID] = pur
 		}
+	}
+}
+
+// SeedThirdParties fills the customer table with the counterparties the seeded
+// documents and movements point at. It is separate from seed() because only the
+// dev server wants it: a plain store stays empty, so the tests that sync
+// customers from Siigo still start from nothing.
+func (s *Store) SeedThirdParties() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	type partyTemplate struct {
+		identification string
+		name           string
+		kind           domain.CustomerType
+		personType     string
+	}
+	for _, p := range []partyTemplate{
+		{"900123456", "Corporación Alfa S.A.S.", domain.CustomerTypeCustomer, "Company"},
+		{"830987654", "Editorial Beta Ltda.", domain.CustomerTypeCustomer, "Company"},
+		{"901222333", "Gamma Consulting", domain.CustomerTypeCustomer, "Company"},
+		{"860111222", "TechSupply S.A.", domain.CustomerTypeSupplier, "Company"},
+		{"901555666", "CloudCo Colombia", domain.CustomerTypeSupplier, "Company"},
+		{"800333444", "Papelería Central", domain.CustomerTypeSupplier, "Company"},
+	} {
+		c := &domain.Customer{
+			ID:             uuid.NewString(),
+			ExternalID:     "siigo-cust-" + p.identification,
+			SiigoID:        "siigo-cust-" + p.identification,
+			Type:           p.kind,
+			PersonType:     p.personType,
+			IDType:         "NIT",
+			Identification: p.identification,
+			Name:           p.name,
+			Active:         true,
+			SyncedAt:       now,
+			CreatedAt:      now,
+			UpdatedAt:      now,
+		}
+		s.customers[c.ID] = c
 	}
 }
 

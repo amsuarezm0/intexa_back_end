@@ -42,7 +42,9 @@ func main() {
 	if dsn == "" {
 		log.Println("DATABASE_URL not set — using in-memory store (dev mode)")
 		log.Println("  login: admin@arca.local / admin")
-		store = memory.New()
+		mem := memory.New()
+		mem.SeedThirdParties() // so the seeded documents resolve to named clients
+		store = mem
 	} else {
 		pool, err := db.Connect(dsn)
 		if err != nil {
