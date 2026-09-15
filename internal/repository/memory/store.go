@@ -1289,18 +1289,22 @@ func (s *Store) GetPeriodData(from, to time.Time) (*domain.PeriodData, error) {
 		}
 	}
 
-	// A pending doc belongs to the period if its due date or any installment
-	// falls within it.
+	// A pending doc belongs to the period if the date it is actually expected on
+	// — the agreed one when set, its due date otherwise — or any installment
+	// falls within it. An agreed date moves the whole balance, so it supersedes
+	// the schedule.
 	invs := make([]*domain.Invoice, 0)
 	for _, inv := range s.invoices {
 		if inv.Status != domain.StatusPending && inv.Status != domain.StatusPartial {
 			continue
 		}
-		hit := inRange(firstNonEmpty(inv.DueDate, inv.Date))
-		for _, ins := range inv.Installments {
-			if inRange(ins.DueDate) {
-				hit = true
-				break
+		hit := inRange(domain.EffectiveDueDate(firstNonEmpty(inv.DueDate, inv.Date), inv.SecondaryDueDate))
+		if inv.SecondaryDueDate == "" {
+			for _, ins := range inv.Installments {
+				if inRange(ins.DueDate) {
+					hit = true
+					break
+				}
 			}
 		}
 		if hit {
@@ -1314,11 +1318,13 @@ func (s *Store) GetPeriodData(from, to time.Time) (*domain.PeriodData, error) {
 		if pur.Status != domain.StatusPending && pur.Status != domain.StatusPartial {
 			continue
 		}
-		hit := inRange(firstNonEmpty(pur.DueDate, pur.Date))
-		for _, ins := range pur.Installments {
-			if inRange(ins.DueDate) {
-				hit = true
-				break
+		hit := inRange(domain.EffectiveDueDate(firstNonEmpty(pur.DueDate, pur.Date), pur.SecondaryDueDate))
+		if pur.SecondaryDueDate == "" {
+			for _, ins := range pur.Installments {
+				if inRange(ins.DueDate) {
+					hit = true
+					break
+				}
 			}
 		}
 		if hit {
