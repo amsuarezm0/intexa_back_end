@@ -1283,7 +1283,8 @@ func (s *Store) GetPeriodData(from, to time.Time) (*domain.PeriodData, error) {
 
 	txs := make([]*domain.Transaction, 0)
 	for _, t := range s.transactions {
-		if inRange(t.Date) {
+		// A movement moves to its agreed payment date, same as a document.
+		if inRange(firstNonEmpty(t.SecondaryDueDate, t.Date)) {
 			cp := *t
 			txs = append(txs, &cp)
 		}

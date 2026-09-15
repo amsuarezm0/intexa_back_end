@@ -94,3 +94,39 @@ func TestPeriodIgnoresInstallmentsOnceAnAgreementExists(t *testing.T) {
 		t.Error("the agreed date's month should hold the invoice")
 	}
 }
+
+// A manual movement follows the same rule as a document: once a payment date is
+// agreed, the money is expected then, so the period that holds it changes too.
+func TestPeriodFollowsAMovementsAgreedPaymentDate(t *testing.T) {
+	s := New()
+	tx := &domain.Transaction{
+		ID: "tx-agreed", Date: "2026-03-10", Description: "Pago proveedor",
+		Type: domain.TypeEgreso, Amount: 500, Status: domain.StatusPending,
+		Source: domain.SourceManual, DueDate: "2026-03-10", SecondaryDueDate: "2026-05-08",
+	}
+	if err := s.CreateTransaction(tx); err != nil {
+		t.Fatalf("CreateTransaction: %v", err)
+	}
+
+	has := func(from, to time.Time) bool {
+		data, err := s.GetPeriodData(from, to)
+		if err != nil {
+			t.Fatalf("GetPeriodData: %v", err)
+		}
+		for _, got := range data.Transactions {
+			if got.ID == tx.ID {
+				return true
+			}
+		}
+		return false
+	}
+
+	from, to := month(2026, time.March)
+	if has(from, to) {
+		t.Error("the movement's own month should no longer hold it")
+	}
+	from, to = month(2026, time.May)
+	if !has(from, to) {
+		t.Error("the agreed date's month should hold the movement")
+	}
+}
