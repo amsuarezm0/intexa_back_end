@@ -793,8 +793,12 @@ func (s *Store) GetOldestPendingOrPartialDate() (string, error) {
 func (s *Store) GetBankBalance() (*domain.BankBalance, error) {
 	var b domain.BankBalance
 	var accounts []byte
+	// Newest first: the table is meant to hold a single row, but rows written
+	// before the upsert below was fixed are still there, and it is the latest
+	// update that answers "was the saldo loaded today".
 	err := s.pool.QueryRow(bg(), `
-		SELECT amount, accounts, updated_by, updated_at FROM bank_balance ORDER BY id LIMIT 1`,
+		SELECT amount, accounts, updated_by, updated_at FROM bank_balance
+		ORDER BY updated_at DESC, id DESC LIMIT 1`,
 	).Scan(&b.Amount, &accounts, &b.UpdatedBy, &b.UpdatedAt)
 	if err != nil {
 		if err == pgx.ErrNoRows {
@@ -816,9 +820,12 @@ func (s *Store) SetBankBalance(b domain.BankBalance) error {
 	if b.Accounts == nil {
 		accounts = []byte("[]")
 	}
+	// The id is pinned so the row is actually replaced. Letting the SERIAL
+	// assign it made every save a fresh row that ON CONFLICT could never match,
+	// so the balance piled up and the read kept handing back the oldest one.
 	_, err = s.pool.Exec(bg(), `
-		INSERT INTO bank_balance (amount, accounts, updated_by, updated_at)
-		VALUES ($1, $2, $3, now())
+		INSERT INTO bank_balance (id, amount, accounts, updated_by, updated_at)
+		VALUES (1, $1, $2, $3, now())
 		ON CONFLICT (id) DO UPDATE
 			SET amount=$1, accounts=$2, updated_by=$3, updated_at=now()`,
 		b.Amount, accounts, b.UpdatedBy)
