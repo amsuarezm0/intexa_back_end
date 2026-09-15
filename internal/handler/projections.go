@@ -68,6 +68,12 @@ func (h *ProjectionsHandler) GetSummary(w http.ResponseWriter, r *http.Request) 
 		jsonError(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
+	movements, err := h.store.GetPendingMovements(horizon)
+	if err != nil {
+		slog.Error("projections/GetSummary: GetPendingMovements", "err", err)
+		jsonError(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
 
 	dailyNet := map[int]float64{}
 	var projInc, projExp float64
@@ -129,6 +135,18 @@ func (h *ProjectionsHandler) GetSummary(w http.ResponseWriter, r *http.Request) 
 			continue
 		}
 		daysAway, ok := parseDaysAway(t.Date)
+		if !ok || daysAway > days {
+			continue
+		}
+		addFlow(t.Type, t.Amount, daysAway)
+	}
+
+	// Movements still awaiting payment. Money that is committed but has not
+	// moved belongs in the horizon exactly like an unpaid document does — it is
+	// only recorded in a different table. It is placed on the day it is
+	// expected, so an agreed payment date carries it there.
+	for _, t := range movements {
+		daysAway, ok := parseDaysAway(movementDueDate(t))
 		if !ok || daysAway > days {
 			continue
 		}
@@ -258,6 +276,33 @@ func (h *ProjectionsHandler) GetSummary(w http.ResponseWriter, r *http.Request) 
 				Title:       t.Description,
 				Description: firstNonEmpty(alertParty(txParty, ""), t.Category),
 				DueDate:     t.Date,
+				Amount:      t.Amount,
+				Color:       color,
+				ThirdParty:  txParty,
+			},
+			daysAway: daysAway,
+			amount:   t.Amount,
+		})
+	}
+
+	for _, t := range movements {
+		due := movementDueDate(t)
+		daysAway, ok := parseDaysAway(due)
+		if !ok || daysAway > days {
+			continue
+		}
+		color, icon := "brand-success", "FileCheck"
+		if t.Type == domain.TypeEgreso {
+			color, icon = "brand-danger", "AlertCircle"
+		}
+		txParty := resolveThirdParty(dir, t.CounterpartyIdentification, t.CounterpartyBranchOffice, t.CounterpartySiigoID)
+		entries = append(entries, entry{
+			alert: domain.ProjectionAlert{
+				ID:          t.ID,
+				Icon:        icon,
+				Title:       firstNonEmpty(t.Description, t.Reference),
+				Description: firstNonEmpty(alertParty(txParty, ""), t.Category),
+				DueDate:     due,
 				Amount:      t.Amount,
 				Color:       color,
 				ThirdParty:  txParty,

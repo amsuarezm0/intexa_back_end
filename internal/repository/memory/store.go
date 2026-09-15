@@ -586,6 +586,28 @@ func (s *Store) GetPendingProjections(horizon time.Time) ([]*domain.Transaction,
 	return out, nil
 }
 
+func (s *Store) GetPendingMovements(horizon time.Time) ([]*domain.Transaction, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []*domain.Transaction
+	for _, t := range s.transactions {
+		if t.IsProjection || t.Status != domain.StatusPending {
+			continue
+		}
+		due := domain.EffectiveDueDate(firstNonEmpty(t.DueDate, t.Date), t.SecondaryDueDate)
+		d, err := time.ParseInLocation("2006-01-02", due, time.Local)
+		if err != nil {
+			continue
+		}
+		if !d.After(horizon) {
+			cp := *t
+			out = append(out, &cp)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Date < out[j].Date })
+	return out, nil
+}
+
 func (s *Store) GetCategoryTotals(from, to time.Time, txType domain.TransactionType) ([]domain.CategoryTotal, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

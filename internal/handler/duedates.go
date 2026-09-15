@@ -41,6 +41,13 @@ func transactionDueDates(t *domain.Transaction) {
 	}
 }
 
+// movementDueDate is the day a movement is expected to move money: the agreed
+// payment date when one was set, its own due date otherwise, and the movement
+// date when it carries neither.
+func movementDueDate(t *domain.Transaction) string {
+	return domain.EffectiveDueDate(firstNonEmpty(t.DueDate, t.Date), t.SecondaryDueDate)
+}
+
 func attachDueDatesToInvoices(invoices []*domain.Invoice) {
 	for _, inv := range invoices {
 		invoiceDueDates(inv)

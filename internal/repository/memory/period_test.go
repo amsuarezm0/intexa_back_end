@@ -130,3 +130,69 @@ func TestPeriodFollowsAMovementsAgreedPaymentDate(t *testing.T) {
 		t.Error("the agreed date's month should hold the movement")
 	}
 }
+
+// Pending movements belong to the projection horizon: the money is committed,
+// it just lives in the transactions table rather than in a document.
+func TestPendingMovementsAreReturnedForTheHorizon(t *testing.T) {
+	s := New()
+	horizon := time.Now().AddDate(0, 0, 30)
+
+	pending := &domain.Transaction{
+		ID: "mov-pending", Date: time.Now().Format("2006-01-02"), Description: "Pendiente dentro del horizonte",
+		Type: domain.TypeEgreso, Amount: 100, Status: domain.StatusPending, Source: domain.SourceManual,
+		DueDate: time.Now().AddDate(0, 0, 10).Format("2006-01-02"),
+	}
+	beyond := &domain.Transaction{
+		ID: "mov-beyond", Date: time.Now().Format("2006-01-02"), Description: "Pendiente fuera del horizonte",
+		Type: domain.TypeEgreso, Amount: 100, Status: domain.StatusPending, Source: domain.SourceManual,
+		DueDate: time.Now().AddDate(0, 0, 60).Format("2006-01-02"),
+	}
+	// Agreed for later: the horizon follows the agreement, not the due date.
+	agreedOut := &domain.Transaction{
+		ID: "mov-agreed-out", Date: time.Now().Format("2006-01-02"), Description: "Aplazado por acuerdo",
+		Type: domain.TypeEgreso, Amount: 100, Status: domain.StatusPending, Source: domain.SourceManual,
+		DueDate:          time.Now().AddDate(0, 0, 5).Format("2006-01-02"),
+		SecondaryDueDate: time.Now().AddDate(0, 0, 90).Format("2006-01-02"),
+	}
+	settled := &domain.Transaction{
+		ID: "mov-settled", Date: time.Now().Format("2006-01-02"), Description: "Ya pagado",
+		Type: domain.TypeEgreso, Amount: 100, Status: domain.StatusCompleted, Source: domain.SourceManual,
+	}
+	projection := &domain.Transaction{
+		ID: "mov-projection", Date: time.Now().Format("2006-01-02"), Description: "Proyección manual",
+		Type: domain.TypeEgreso, Amount: 100, Status: domain.StatusPending, Source: domain.SourceManual,
+		IsProjection: true,
+	}
+	for _, tx := range []*domain.Transaction{pending, beyond, agreedOut, settled, projection} {
+		if err := s.CreateTransaction(tx); err != nil {
+			t.Fatalf("CreateTransaction %s: %v", tx.ID, err)
+		}
+	}
+
+	got, err := s.GetPendingMovements(horizon)
+	if err != nil {
+		t.Fatalf("GetPendingMovements: %v", err)
+	}
+	// CreateTransaction assigns the id, so the movements are matched by the id
+	// it left on each one.
+	ids := make(map[string]bool, len(got))
+	for _, tx := range got {
+		ids[tx.ID] = true
+	}
+	if !ids[pending.ID] {
+		t.Error("a movement due inside the horizon should be in it")
+	}
+	for _, unwanted := range []struct {
+		tx  *domain.Transaction
+		why string
+	}{
+		{beyond, "due past the horizon"},
+		{agreedOut, "agreed past the horizon"},
+		{settled, "already paid"},
+		{projection, "a projection, counted separately"},
+	} {
+		if ids[unwanted.tx.ID] {
+			t.Errorf("%s should not be in the horizon: %s", unwanted.tx.Description, unwanted.why)
+		}
+	}
+}

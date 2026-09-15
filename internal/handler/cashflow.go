@@ -69,6 +69,15 @@ func (h *CashFlowHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
+	// Movements still awaiting payment within the same window. The Proyecciones
+	// horizon counts them, so the projected balance shown here has to as well or
+	// the two disagree about the same 30 days.
+	movements, err := h.store.GetPendingMovements(horizon30)
+	if err != nil {
+		slog.Error("cashflow: GetPendingMovements", "err", err)
+		jsonError(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
 
 	// ── 7-day chart ───────────────────────────────────────────────────────────
 	// Index daily totals by date string for O(1) lookup
@@ -111,6 +120,13 @@ func (h *CashFlowHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	for _, t := range projections {
+		if t.Type == domain.TypeIngreso {
+			pendingInc += t.Amount
+		} else {
+			pendingExp += t.Amount
+		}
+	}
+	for _, t := range movements {
 		if t.Type == domain.TypeIngreso {
 			pendingInc += t.Amount
 		} else {

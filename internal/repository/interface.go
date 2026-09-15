@@ -26,6 +26,9 @@ type Store interface {
 	GetDailyTotals(from, to time.Time) ([]domain.DailyTotal, error)
 	GetPendingTransactions() ([]*domain.Transaction, error)
 	GetPendingProjections(horizon time.Time) ([]*domain.Transaction, error)
+	// GetPendingMovements returns the manual movements still awaiting payment,
+	// windowed on the date each is expected to move money.
+	GetPendingMovements(horizon time.Time) ([]*domain.Transaction, error)
 	GetCategoryTotals(from, to time.Time, txType domain.TransactionType) ([]domain.CategoryTotal, error)
 	GetWeeklyTotals(year int, month time.Month) ([]domain.WeeklyComparison, error)
 

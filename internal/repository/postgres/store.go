@@ -263,6 +263,24 @@ func (s *Store) GetPendingProjections(horizon time.Time) ([]*domain.Transaction,
 	return scanTransactions(rows)
 }
 
+// GetPendingMovements returns movements (not projections) still marked
+// Pendiente, windowed on the day the money is expected: the agreed payment date
+// when one was set, the movement's own due date otherwise. Siigo receipts are
+// always settled or void, so in practice these are the manual ones.
+func (s *Store) GetPendingMovements(horizon time.Time) ([]*domain.Transaction, error) {
+	rows, err := s.pool.Query(bg(), `
+		SELECT`+transactionCols+`
+		FROM   transactions
+		WHERE  is_projection=false AND status='Pendiente'
+		  AND  COALESCE(secondary_due_date, due_date, date) <= $1
+		ORDER  BY COALESCE(secondary_due_date, due_date, date) ASC`, horizon)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanTransactions(rows)
+}
+
 func (s *Store) GetCategoryTotals(from, to time.Time, txType domain.TransactionType) ([]domain.CategoryTotal, error) {
 	var rows pgx.Rows
 	var err error
