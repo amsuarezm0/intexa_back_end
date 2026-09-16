@@ -1305,8 +1305,10 @@ func (s *Store) GetPeriodData(from, to time.Time) (*domain.PeriodData, error) {
 
 	txs := make([]*domain.Transaction, 0)
 	for _, t := range s.transactions {
-		// A movement moves to its agreed payment date, same as a document.
-		if inRange(firstNonEmpty(t.SecondaryDueDate, t.Date)) {
+		// A movement is placed on the day it falls due, and moves to its agreed
+		// payment date when one was set — same as a document. A Siigo receipt
+		// carries neither and stays on the date the cash moved.
+		if inRange(domain.EffectiveDueDate(firstNonEmpty(t.DueDate, t.Date), t.SecondaryDueDate)) {
 			cp := *t
 			txs = append(txs, &cp)
 		}

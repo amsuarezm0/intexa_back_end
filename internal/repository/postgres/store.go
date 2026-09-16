@@ -1355,17 +1355,18 @@ func jsonOrEmptyArray(v any) string {
 // ── Cashflow period ───────────────────────────────────────────────────────
 
 // GetPeriodData gathers what a period owes and expects. A movement or pending
-// document is placed by its agreed payment date when one was set: that is the date the money
-// is actually expected, so the document leaves the window its original due date
-// fell in and joins the agreed one. An agreed date also supersedes the
+// document is placed by the date it is expected to be paid: the agreed date when
+// one was set, its due date otherwise, and — for a Siigo receipt, which carries
+// neither — the date the cash moved. So a renegotiated record leaves the window
+// its due date fell in and joins the agreed one. An agreed date also supersedes the
 // installment schedule — the whole balance moves to it — so the per-installment
 // match only applies while no agreement exists.
 func (s *Store) GetPeriodData(from, to time.Time) (*domain.PeriodData, error) {
 	txRows, err := s.pool.Query(bg(), `
 		SELECT`+transactionCols+`
 		FROM   transactions
-		WHERE  COALESCE(secondary_due_date, date) >= $1
-		  AND  COALESCE(secondary_due_date, date) <= $2
+		WHERE  COALESCE(secondary_due_date, due_date, date) >= $1
+		  AND  COALESCE(secondary_due_date, due_date, date) <= $2
 		ORDER  BY date DESC`, from, to)
 	if err != nil {
 		return nil, err
