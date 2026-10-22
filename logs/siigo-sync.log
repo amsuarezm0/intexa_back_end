@@ -118,3 +118,4 @@
 2026-10-19T12:22:11-0500 | 200 OK | POST /api/v1/siigo/sync/cron | mode=incremental invoices=0 purchases=0 vouchers=1 receipts=5 updated=2480
 2026-10-20T10:35:01-0500 | 200 OK | POST /api/v1/siigo/sync/cron | mode=incremental invoices=0 purchases=1 vouchers=0 receipts=14 updated=2479
 2026-10-21T10:52:21-0500 | 200 OK | POST /api/v1/siigo/sync/cron | mode=incremental invoices=2 purchases=0 vouchers=0 receipts=10 updated=2481
+2026-10-22T10:48:51-0500 | 200 OK | POST /api/v1/siigo/sync/cron | mode=incremental invoices=1 purchases=0 vouchers=0 receipts=0 updated=2480
