@@ -140,3 +140,4 @@
 2026-11-10T13:30:48-0500 | 200 OK | POST /api/v1/siigo/sync/cron | mode=incremental invoices=1 purchases=0 vouchers=0 receipts=5 updated=2513
 2026-11-11T13:28:46-0500 | 200 OK | POST /api/v1/siigo/sync/cron | mode=incremental invoices=1 purchases=2 vouchers=0 receipts=19 updated=2518
 2026-11-12T13:44:23-0500 | 200 OK | POST /api/v1/siigo/sync/cron | mode=incremental invoices=0 purchases=1 vouchers=0 receipts=0 updated=2539
+2026-11-13T13:26:18-0500 | 200 OK | POST /api/v1/siigo/sync/cron | mode=incremental invoices=0 purchases=6 vouchers=0 receipts=1 updated=2531
